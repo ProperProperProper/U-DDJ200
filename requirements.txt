@@ -1,0 +1,9 @@
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+scipy>=1.11.0
+librosa>=0.10.0
+mutagen>=1.47.0
+python-rtmidi>=1.5.8
+PyQt6>=6.5.0
+pyqtgraph>=0.13.3

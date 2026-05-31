@@ -1,0 +1,276 @@
+"""
+MainWindow — top-level U-DJ window.
+Layout: [Deck 1] [Mixer] [Deck 2]
+        [          Library          ]
+"""
+from __future__ import annotations
+
+
+import sys
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                              QSplitter, QStatusBar, QLabel)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont
+
+from ..core.engine import AudioEngine
+from ..midi.ddj200 import DDJ200
+from ..library.db import init_db
+from .deck_widget import DeckWidget
+from .mixer_widget import MixerWidget
+from .library_widget import LibraryWidget
+from .beat_grid_widget import BeatGridWidget
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("U-DJ")
+        self.setMinimumSize(1400, 820)
+        self.resize(1500, 900)
+
+        # ── Engine & MIDI ──────────────────────────────────
+        self.engine = AudioEngine()
+        self.controller = DDJ200(self.engine)
+
+        # LED feedback — set AFTER DeckWidget connects its own callbacks
+        # so we don't overwrite them here
+
+        # ── UI ────────────────────────────────────────────
+        self._build_ui()
+
+        # ── Start engine & connect controller ─────────────
+        self.engine.start()
+        self.controller.connect()
+
+        # ── Status bar ────────────────────────────────────
+        sb = self.statusBar()
+        self._midi_status = QLabel("Controller: searching…")
+        self._analysis_status = QLabel("")
+        sb.addWidget(self._analysis_status)
+        sb.addPermanentWidget(self._midi_status)
+        QTimer.singleShot(500, self._check_midi)
+
+        # Analyse unanalysed library tracks in background on startup
+        QTimer.singleShot(1500, self._analyse_library)
+
+    # ──────────────────────────────────────────────────────────
+    #  UI layout
+    # ──────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
+
+        # Top: decks + mixer
+        top = QHBoxLayout()
+        top.setSpacing(6)
+
+        self.deck1_widget = DeckWidget(
+            self.engine.deck(0), deck_label="1", accent="#00c8ff",
+            on_load_track=lambda p: self._load_path(0, p),
+            vu_peak_fn=lambda: self.engine.vu_peak[0])
+        self.deck2_widget = DeckWidget(
+            self.engine.deck(1), deck_label="2", accent="#ff7a01",
+            on_load_track=lambda p: self._load_path(1, p),
+            vu_peak_fn=lambda: self.engine.vu_peak[1])
+
+        self.mixer_widget = MixerWidget(
+            self.engine.mixer,
+            engine=self.engine,
+            master_peak_fn=lambda: (self.engine.master_peak[0],
+                                    self.engine.master_peak[1]),
+            deck_peak_fns=[lambda: self.engine.vu_peak[0],
+                           lambda: self.engine.vu_peak[1]])
+
+        top.addWidget(self.deck1_widget, 2)
+        top.addWidget(self.mixer_widget, 0)
+        top.addWidget(self.deck2_widget, 2)
+
+        # Beat grid monitor — full width strip at top
+        self.beat_grid = BeatGridWidget(self.engine)
+        root.addWidget(self.beat_grid, 0)
+
+        root.addLayout(top, 3)
+
+        # Bottom: library
+        self.library = LibraryWidget(
+            on_load_deck1=lambda t: self._load_track(0, t),
+            on_load_deck2=lambda t: self._load_track(1, t),
+        )
+        self.library.setMinimumHeight(200)
+        root.addWidget(self.library, 1)
+
+        # Give the MIDI controller a reference so shift+CFX can scroll/load
+        self.controller.library = self.library
+
+    # ──────────────────────────────────────────────────────────
+    #  Track loading
+    # ──────────────────────────────────────────────────────────
+
+    def _load_track(self, deck_idx: int, track: dict):
+        from ..library.db import record_play
+        self.engine.load_track(deck_idx, track["path"], metadata=track)
+        record_play(track["path"])
+        self._ensure_grid(deck_idx, track["path"], track)
+
+    def _load_path(self, deck_idx: int, path: str):
+        from ..library.db import get_track, record_play
+        from ..library.analyzer import analyse_track
+        meta = get_track(path)
+        if meta and meta.get("bpm"):
+            # Load immediately — don't wait for analysis
+            self.engine.load_track(deck_idx, path, metadata=meta)
+            record_play(path)
+            self._ensure_grid(deck_idx, path, meta)
+        else:
+            # Never seen this track — must analyse before we know BPM/grid
+            def _done(m):
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.engine.load_track(
+                    deck_idx, path, metadata=m))
+            analyse_track(path, on_done=_done, force=bool(meta))
+
+    def _ensure_grid(self, deck_idx: int, path: str, meta: dict):
+        """
+        If first_beat_sec is missing for this track, run analysis in the
+        background and patch the live deck as soon as the result arrives.
+        The track is already loaded and can be played immediately; the beat
+        grid simply improves a few seconds later.
+        """
+        has_beats   = bool(meta.get("beat_positions_json",   "[]") not in ("[]", "", None))
+        has_phrases = bool(meta.get("phrase_positions_json", "[]") not in ("[]", "", None))
+        has_cues    = bool(meta.get("cue_points_json",       "[]") not in ("[]", "", None))
+        has_fb      = float(meta.get("first_beat_sec", 0) or 0) > 0.0
+        has_lufs    = meta.get("loudness_lufs") is not None
+        has_camelot = bool(meta.get("camelot"))
+
+        if has_beats and has_phrases and has_cues and has_fb and has_lufs and has_camelot:
+            return   # everything already analysed
+
+        from ..library.analyzer import analyse_track
+
+        def _patch(new_meta):
+            import json as _json
+            import numpy as _np
+            deck = self.engine.deck(deck_idx)
+            if deck.file_path != path:
+                return
+
+            fbs = float(new_meta.get("first_beat_sec", 0) or 0)
+            bpm = float(new_meta.get("bpm", 0) or 0)
+            if fbs > 0:
+                deck.first_beat = fbs * deck.sample_rate
+            if bpm > 0 and deck.bpm == 0:
+                deck.bpm = bpm
+
+            for attr, key in [("beats",   "beat_positions_json"),
+                               ("phrases", "phrase_positions_json")]:
+                raw = new_meta.get(key, "[]") or "[]"
+                try:
+                    sec_list = _json.loads(raw)
+                    setattr(deck, attr,
+                            _np.array(sec_list, dtype=_np.float64) * deck.sample_rate
+                            if sec_list else None)
+                except Exception:
+                    pass
+
+            # Store loudness/camelot — but do NOT auto-enable gain;
+            # that's the user's choice via the NORM button
+            gain_db = float(new_meta.get("gain_db", 0) or 0)
+            deck.gain_linear  = float(10.0 ** (gain_db / 20.0))
+            deck._camelot     = new_meta.get("camelot", "") or ""
+            deck.energy       = int(new_meta.get("energy", 0) or 0)
+
+            # Only reset sync state if deck is NOT currently playing
+            # (resetting while playing causes a mid-song bar-snap!)
+            # Apply auto cue points (only fill empty slots)
+            import json as _json2
+            cq_raw = new_meta.get("cue_points_json", "[]") or "[]"
+            try:
+                for cue in _json2.loads(cq_raw):
+                    pad = int(cue.get("pad", 0))
+                    sec = float(cue.get("sec", 0.0))
+                    if 0 <= pad < 8 and deck.hot_cues[pad] is None:
+                        deck.hot_cues[pad] = int(sec * deck.sample_rate)
+            except Exception:
+                pass
+
+            if not deck.playing:
+                self.engine._was_playing[deck_idx] = False
+
+            n_b = len(deck.beats)   if deck.beats   is not None else 0
+            n_p = len(deck.phrases) if deck.phrases is not None else 0
+            print(f"[U-DJ] deck {deck_idx} patched: bpm={deck.bpm:.2f} "
+                  f"beats={n_b} phrases={n_p} gain={gain_db:+.1f}dB "
+                  f"camelot={deck._camelot}")
+
+        # force=True only when we know something is missing
+        analyse_track(path, on_done=_patch, force=True)
+
+    # ──────────────────────────────────────────────────────────
+    #  Status
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_fully_analysed(meta: dict) -> bool:
+        return bool(
+            meta.get("bpm") and
+            meta.get("beat_positions_json") not in (None, "", "[]") and
+            meta.get("phrase_positions_json") not in (None, "", "[]") and
+            meta.get("camelot") and
+            meta.get("loudness_lufs") is not None
+        )
+
+    def _analyse_library(self):
+        from ..library.db import all_tracks
+        from ..library.analyzer import analyse_track
+        from PyQt6.QtCore import QTimer
+
+        tracks = all_tracks()
+        todo   = [t for t in tracks if not self._is_fully_analysed(t)]
+        if not todo:
+            self._analysis_status.setText("")
+            return
+
+        total    = len(todo)
+        done     = [0]
+
+        self._analysis_status.setStyleSheet("color:#ffaa00;")
+        self._analysis_status.setText(f"Analysing {total} tracks…  0 / {total}")
+
+        def _on_one(meta):
+            done[0] += 1
+            remaining = total - done[0]
+            if remaining > 0:
+                QTimer.singleShot(0, lambda: (
+                    self._analysis_status.setText(
+                        f"Analysing library…  {done[0]} / {total}"),
+                    self.library._model.reload()))
+            else:
+                QTimer.singleShot(0, lambda: (
+                    self._analysis_status.setStyleSheet("color:#00dd88;"),
+                    self._analysis_status.setText(f"Library analysis complete  ✓  {total} tracks"),
+                    self.library._model.reload()))
+
+        for t in todo:
+            analyse_track(t["path"], on_done=_on_one, force=True)
+
+    def _check_midi(self):
+        if self.controller._connected:
+            self._midi_status.setText("Controller: DDJ-200 ✓")
+            self._midi_status.setStyleSheet("color:#00dd88;")
+        else:
+            self._midi_status.setText("Controller: not found (keyboard/mouse only)")
+            self._midi_status.setStyleSheet("color:#ff8800;")
+
+    # ──────────────────────────────────────────────────────────
+    #  Cleanup
+    # ──────────────────────────────────────────────────────────
+
+    def closeEvent(self, event):
+        self.controller.disconnect()
+        self.engine.stop()
+        super().closeEvent(event)
