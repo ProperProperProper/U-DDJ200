@@ -3,6 +3,7 @@
 **Professional DJ application for macOS — built for serious use.**
 
 U-DJ is a full-featured DJ application written in Python/PyQt6 with Pioneer DDJ-200 hardware support, Mixxx-exact beat sync, ML-powered stem separation, and a studio-quality effects chain.
+<img width="1468" height="838" alt="Screenshot 2026-05-31 at 8 45 08 PM" src="https://github.com/user-attachments/assets/0aa471fd-5184-4dac-89e0-a85c9006a1c0" />
 
 ---
 
