@@ -1,0 +1,8 @@
+build/
+dist/
+*.pyc
+__pycache__/
+*.spec.bak
+.DS_Store
+*.egg-info/
+.env
