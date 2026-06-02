@@ -27,7 +27,8 @@ def main():
     window = MainWindow()
     window.show()
 
-    sys.exit(app.exec())
+    app.exec()
+    os._exit(0)   # force-kill all background threads (demucs, analyzer, stems)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                               QTableView, QPushButton, QLabel, QProgressBar,
                               QFileDialog, QHeaderView, QAbstractItemView)
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl
+from PyQt6.QtCore import Qt, QTimer, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl
 from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
