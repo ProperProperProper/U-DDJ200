@@ -281,7 +281,10 @@ class AudioEngine:
             return
 
         sr             = master.sample_rate
-        master_eff_bpm = master.bpm * master.rate
+        # Include key_shift ratio: key shift changes effective playback speed.
+        # Sync must match the actual audio tempo, not just deck.rate.
+        master_key_ratio = 2.0 ** (getattr(master, 'key_shift', 0) / 12.0)
+        master_eff_bpm   = master.bpm * master.rate * master_key_ratio
         if master_eff_bpm <= 0:
             return
 
@@ -313,8 +316,20 @@ class AudioEngine:
             if not follower.playing:
                 continue
 
-            # ALWAYS set exact nominal — this is the hard lock
-            nominal = master_eff_bpm / follower.bpm
+            # ALWAYS set exact nominal — this is the hard lock.
+            # Divide out the follower's key_shift so deck.rate represents pure
+            # tempo adjustment; key_shift is applied separately in deck.read().
+            follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
+            raw_nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
+
+            # Half/double BPM correction: if analysis gave wrong octave, the raw
+            # nominal lands near 0.5 or 2.0. Correct by using the nearest
+            # musically-equivalent BPM (halve or double) so rate stays near 1.0.
+            nominal = raw_nominal
+            if raw_nominal > 1.6:
+                nominal = raw_nominal / 2.0   # follower BPM was detected at half-tempo
+            elif raw_nominal < 0.625:
+                nominal = raw_nominal * 2.0   # follower BPM was detected at double-tempo
             follower.rate = max(0.5, min(2.0, nominal))
 
             # Detect master rate change
@@ -408,11 +423,18 @@ class AudioEngine:
         if master is None or follower.bpm <= 0 or follower.audio is None:
             return
 
-        sr         = master.sample_rate
-        target_bpm = master.bpm * master.rate
+        sr               = master.sample_rate
+        master_key_ratio = 2.0 ** (getattr(master,   'key_shift', 0) / 12.0)
+        follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
+        target_bpm       = master.bpm * master.rate * master_key_ratio
 
-        # Tempo match
-        follower.rate = max(0.5, min(2.0, target_bpm / follower.bpm))
+        # Tempo match — divide out follower key_shift (applied separately in deck.read)
+        raw_nominal = (target_bpm / follower.bpm) / follower_key_ratio
+        if raw_nominal > 1.6:
+            raw_nominal /= 2.0
+        elif raw_nominal < 0.625:
+            raw_nominal *= 2.0
+        follower.rate = max(0.5, min(2.0, raw_nominal))
 
         # Grid-interpolated bar-snap — uses stored beat positions, not arithmetic.
         # For the same track on both decks this gives sample-exact alignment.
