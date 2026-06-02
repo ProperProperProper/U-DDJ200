@@ -444,6 +444,12 @@ class AudioEngine:
     def _callback(self, outdata: np.ndarray, frames: int, time, status):
         try:
             self._apply_sync()
+            # Feed current BPM to beat-aware effects (Echo, Roll)
+            for i, deck in enumerate(self.decks):
+                if deck.bpm > 0:
+                    fx = self.mixer.fx[i]
+                    if hasattr(fx, 'set_bpm'):
+                        fx.set_bpm(deck.bpm * deck.rate)
             buffers = [d.read(frames) for d in self.decks]
             for i, b in enumerate(buffers):
                 self.vu_peak[i] = float(np.max(np.abs(b)))

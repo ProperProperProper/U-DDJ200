@@ -68,6 +68,9 @@ class Deck:
         self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}  # per-stem gain
         self.stems_ready  = False
         self._stems_cache: Optional[np.ndarray] = None
+        self._solo_stem:   Optional[str] = None   # name of soloed stem (hold-to-solo)
+
+        self.key_shift: int = 0   # semitones ±12; applied as playback rate multiplier
 
         self.on_track_loaded:       Optional[Callable] = None
         self.on_play_state_changed: Optional[Callable] = None
@@ -210,6 +213,22 @@ class Deck:
                     self.position = float(self.cue_point)
                 self.playing = False
 
+    def cue_stutter_start(self):
+        """rekordbox CDJ cue hold: jump to cue and play while held."""
+        if self.cue_point >= 0:
+            self.position = float(self.cue_point)
+        self.playing = True
+        if self.on_play_state_changed:
+            self.on_play_state_changed(self.deck_id, True)
+
+    def cue_stutter_stop(self):
+        """rekordbox CDJ cue release: stop and return to cue point."""
+        if self.cue_point >= 0:
+            self.position = float(self.cue_point)
+        self.playing = False
+        if self.on_play_state_changed:
+            self.on_play_state_changed(self.deck_id, False)
+
     def cue_gotoandstop(self):
         if self.cue_point >= 0:
             self.position = float(self.cue_point)
@@ -291,6 +310,34 @@ class Deck:
         bar_len  = beat_len * 4.0
         return int(self.first_beat + round((position - self.first_beat) / bar_len) * bar_len)
 
+    def loop_halve(self):
+        """Halve the current loop length."""
+        if not self.loop_active or self.loop_in is None or self.loop_out is None:
+            return
+        mid = self.loop_in + (self.loop_out - self.loop_in) // 2
+        self.loop_out = mid
+        if self.bpm > 0:
+            self._current_loop_beats = (self.loop_out - self.loop_in) / (self.sample_rate * 60.0 / self.bpm)
+
+    def loop_double(self):
+        """Double the current loop length."""
+        if not self.loop_active or self.loop_in is None or self.loop_out is None:
+            return
+        span = self.loop_out - self.loop_in
+        self.loop_out = min(self.loop_in + span * 2,
+                            len(self.audio) - 1 if self.audio is not None else self.loop_out + span)
+        if self.bpm > 0:
+            self._current_loop_beats = (self.loop_out - self.loop_in) / (self.sample_rate * 60.0 / self.bpm)
+
+    def beat_jump(self, bars: float):
+        """Jump forward (positive) or backward (negative) by N bars, quantized to bar grid."""
+        if self.bpm <= 0 or self.audio is None:
+            return
+        bar_samples = self.sample_rate * 60.0 / self.bpm * 4.0
+        new_pos = self.position + bars * bar_samples
+        total = len(self.audio)
+        self.position = float(max(0.0, min(total - 2, new_pos)))
+
     def beatloop_toggle(self, beats: float):
         if self.loop_active and self._current_loop_beats == beats:
             self.loop_active = False
@@ -364,17 +411,22 @@ class Deck:
     def set_stem_volume(self, name: str, raw: float):
         """
         raw is 0..1 (knob value / 127).
-        Physical center (64/127 ≈ 0.504) = full volume.
-        Left of center fades to silence; right of center stays at full.
-        sqrt taper on the lower half gives smooth fade feel.
+        0.5 (knob center, 64/127) = full volume. ≥0.5 = full (no boost).
+        0→0.5: sqrt taper from kill→full — matches DJM EQ kill-to-unity feel.
+        Below 0.01 raw = hard kill (remove from active set for clean silence).
         """
         import math
-        # Normalise so 0.5 = unity; anything >= 0.5 is full volume
+        raw = max(0.0, min(1.0, float(raw)))
         if raw >= 0.5:
             vol = 1.0
         else:
-            vol = math.sqrt(raw / 0.5)   # 0→0, 0.5→1.0 with sqrt curve
+            vol = math.sqrt(raw / 0.5)   # 0→0, 0.5→1.0, smooth sqrt curve
         self.stem_volumes[name] = vol
+        # Hard kill: remove from active set to prevent float-noise residual
+        if raw < 0.01:
+            self.active_stems.discard(name)
+        else:
+            self.active_stems.add(name)
 
     def _rebuild_stems_cache(self):
         """Recompute the precomputed mix of active stems with per-stem volumes."""
@@ -438,7 +490,10 @@ class Deck:
             if total < 4:
                 return silence
 
-            rate       = self.rate + self._bend
+            # Key shift: multiply rate by 2^(semitones/12) for pitch transposition.
+            # Sync engine compensates tempo drift, so only pitch shifts audibly.
+            key_ratio  = 2.0 ** (self.key_shift / 12.0) if self.key_shift != 0 else 1.0
+            rate       = (self.rate + self._bend) * key_ratio
             self._bend *= 0.75   # decay: bend fades over ~10 callbacks (230ms)
 
             pos = self.position + np.arange(frames, dtype=np.float64) * rate

@@ -616,12 +616,130 @@ class DriveEffect(_Effect):
                        -1.0, 1.0).astype(np.float32)
 
 
+# ── ECHO ─────────────────────────────────────────────────────────────────────
+
+class EchoEffect(_Effect):
+    """
+    rekordbox-style Echo (Beat Echo / Echo Out).
+
+    Stores the last 2 beats worth of audio in a circular buffer and
+    feeds it back with decaying amplitude — the classic "echo out" effect.
+
+    Right of centre : heavy echo with long decay (4 repeats)
+    Left  of centre : single short slap-echo
+    """
+    NAME = "ECHO"
+
+    def __init__(self, sr: int = 44100):
+        super().__init__(sr)
+        # Buffer sized for 2 beats at 60 BPM (2 seconds)
+        size         = int(sr * 2.0) + 64
+        self._buf    = np.zeros((size, 2), dtype=np.float64)
+        self._widx   = 0
+        # Default delay ≈ 1 beat at 128 BPM = 469 ms
+        self._delay  = int(sr * 0.469)
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        a = self._amount()
+        if a < 0.01:
+            return audio
+        n    = len(audio)
+        size = len(self._buf)
+
+        if self._depth >= 0.5:
+            feedback = 0.50 + a * 0.40   # 0.50 → 0.90
+            wet      = 0.30 + a * 0.60
+        else:
+            feedback = a * 0.45          # 0 → 0.45 (single slap)
+            wet      = 0.20 + a * 0.40
+
+        delay = max(1, min(self._delay, size - n - 1))
+        ridx  = (self._widx - delay + np.arange(n)) % size
+        echo  = self._buf[ridx].copy()
+
+        # Write input + fed-back echo into buffer
+        widx_arr = (self._widx + np.arange(n)) % size
+        self._buf[widx_arr] = audio.astype(np.float64) + echo * feedback
+        self._widx = int((self._widx + n) % size)
+
+        return np.clip(audio.astype(np.float64) + echo * wet,
+                       -1.0, 1.0).astype(np.float32)
+
+    def set_bpm(self, bpm: float):
+        """Snap delay time to 1 beat at the given BPM."""
+        if bpm > 0:
+            self._delay = max(1, int(self.sr * 60.0 / bpm))
+
+
+# ── ROLL ──────────────────────────────────────────────────────────────────────
+
+class RollEffect(_Effect):
+    """
+    rekordbox-style Roll (Beat Roll).
+
+    Captures audio into a loop buffer of beat-fraction size and replays it,
+    creating the signature "stutter roll" effect.
+
+    Right of centre : long roll window (1 beat)
+    Left  of centre : short roll window (1/4 beat — tight stutter)
+    """
+    NAME = "ROLL"
+
+    def __init__(self, sr: int = 44100):
+        super().__init__(sr)
+        # Buffer for 2 beats at 60 BPM
+        size          = int(sr * 2.0) + 64
+        self._buf     = np.zeros((size, 2), dtype=np.float32)
+        self._widx    = 0
+        self._ridx    = 0
+        self._loop_len = int(sr * 0.469)  # default: 1 beat @128 BPM
+        self._capturing = False
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        a = self._amount()
+        if a < 0.01:
+            # Not active — still write to buffer for future captures
+            n    = len(audio)
+            size = len(self._buf)
+            widx_arr = (self._widx + np.arange(n)) % size
+            self._buf[widx_arr] = audio
+            self._widx = int((self._widx + n) % size)
+            self._ridx = self._widx  # keep read head in sync
+            return audio
+
+        n    = len(audio)
+        size = len(self._buf)
+
+        if not self._capturing:
+            # Start capture: lock read position to start of loop
+            self._ridx      = self._widx
+            self._capturing = True
+
+        # Read from the loop
+        ridx_arr = (self._ridx + np.arange(n)) % size
+        out      = self._buf[ridx_arr].copy()
+
+        # Advance read head, wrapping within loop window
+        loop_len = max(1, self._loop_len)
+        self._ridx = int((self._ridx + n - self._widx) % loop_len + self._widx) % size
+
+        return out
+
+    def set_bpm(self, bpm: float):
+        """Resize loop to 1 beat at the given BPM."""
+        if bpm > 0:
+            self._loop_len = max(1, int(self.sr * 60.0 / bpm))
+            if self._depth < 0.5:
+                # Left side = quarter-beat
+                self._loop_len = max(1, self._loop_len // 4)
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 FX_TYPES: dict[str, type] = {
     cls.NAME: cls
-    for cls in [FilterEffect, DelayEffect, ReverbEffect,
-                FlangerEffect, PhaserEffect, DriveEffect]
+    for cls in [FilterEffect, EchoEffect, RollEffect, DelayEffect,
+                ReverbEffect, FlangerEffect, PhaserEffect, DriveEffect]
 }
 FX_NAMES = list(FX_TYPES.keys())
 

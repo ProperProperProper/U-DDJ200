@@ -13,6 +13,40 @@ import rtmidi
 from ..core.engine import AudioEngine
 from ..core.deck import BEAT_LOOP_SIZES, STEM_NAMES
 
+# Camelot wheel: maps Camelot code → semitone (C=0, C#=1, … B=11)
+# Minor keys (A suffix) and major keys (B suffix) share the same pitch class.
+_CAMELOT_TO_SEMITONE = {
+    "1A": 8,  "1B": 11,  # Ab minor / B major
+    "2A": 3,  "2B": 6,   # Eb minor / F# major
+    "3A": 10, "3B": 1,   # Bb minor / Db major
+    "4A": 5,  "4B": 8,   # F minor  / Ab major
+    "5A": 0,  "5B": 3,   # C minor  / Eb major
+    "6A": 7,  "6B": 10,  # G minor  / Bb major
+    "7A": 2,  "7B": 5,   # D minor  / F major
+    "8A": 9,  "8B": 0,   # A minor  / C major
+    "9A": 4,  "9B": 7,   # E minor  / G major
+    "10A": 11, "10B": 2, # B minor  / D major
+    "11A": 6, "11B": 9,  # F# minor / A major
+    "12A": 1, "12B": 4,  # C# minor / E major
+}
+
+def _camelot_semitone_diff(master_camelot: str, follower_camelot: str) -> int:
+    """
+    Return the number of semitones to shift follower to match master key.
+    Chooses the smallest shift (±6 semitones max).
+    """
+    m = _CAMELOT_TO_SEMITONE.get(master_camelot.upper().strip())
+    f = _CAMELOT_TO_SEMITONE.get(follower_camelot.upper().strip())
+    if m is None or f is None:
+        return 0
+    diff = (m - f + 12) % 12
+    if diff > 6:
+        diff -= 12   # wrap to ±6
+    return diff
+
+# Beat jump sizes in bars (pads 0-7 → neg/pos pairs)
+BEAT_JUMP_BARS = [-1.0, -2.0, -4.0, -8.0, 1.0, 2.0, 4.0, 8.0]
+
 # ─────────────────────────────────────────────────────────────
 #  MIDI address constants
 # ─────────────────────────────────────────────────────────────
@@ -83,6 +117,12 @@ class DDJ200:
         self._xf_msb         = 0
         self._jog_touch      = [False, False]
         self._loop_recording  = [False, False]   # True while awaiting loop-out press
+        # Pad mode per deck: cycles HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX
+        self._pad_mode       = ["BEAT LOOP", "BEAT LOOP"]
+        _PAD_MODES = ["HOT CUE", "BEAT LOOP", "STEMS", "BEAT JUMP", "PAD FX"]
+        self._PAD_MODES      = _PAD_MODES
+        self._pfx_held       = [[False]*8, [False]*8]   # pad FX gate state per deck
+        self._jog_key_accum  = [0, 0]                   # fractional key shift accumulator
 
         # EQ soft-pickup: last known physical knob position per (deck, band).
         # EQ only activates once the physical knob crosses the live EQ value.
@@ -158,8 +198,7 @@ class DDJ200:
                         # Shift engaged — re-arm EQ pickup so knobs don't jump
                         self._eq_pickup_armed[d] = [True, True, True]
                     if not val and was_shift:
-                        # Shift released — kill FX on this deck (back to bypass)
-                        self.engine.mixer.set_fx_raw(d, 64)
+                        pass  # FX state is now persistent — CFX knob controls it
                     return
 
                 if note == NOTE_PLAY and val:
@@ -173,36 +212,48 @@ class DDJ200:
                         self._sync_deck(master_d)  # re-press master's sync to re-snap follower
                     return
 
-                if note == NOTE_CUE and val:
-                    if self._shift[d]:
-                        self.engine.deck(d).cue_gotoandstop()
+                if note == NOTE_CUE:
+                    deck = self.engine.deck(d)
+                    if val:
+                        if self._shift[d]:
+                            deck.cue_gotoandstop()
+                        elif not deck.playing and deck.cue_point >= 0:
+                            # CDJ stutter: hold CUE = play from cue
+                            deck.cue_stutter_start()
+                        else:
+                            deck.cue_default(True)
                     else:
-                        self.engine.deck(d).cue_default(True)
+                        # Release: if stutter was active (deck playing from cue), stop
+                        if not self._shift[d] and deck.playing and deck.cue_point >= 0:
+                            # Only stutter-stop if we started the play via CUE hold
+                            # (heuristic: deck was stopped before, now playing from cue point)
+                            deck.cue_stutter_stop()
                     self._update_cue_led(d)
                     return
 
                 if note == NOTE_SYNC and val:
                     deck = self.engine.deck(d)
                     if self._shift[d]:
-                        # Shift+Sync: toggle quantize on/off for this deck
-                        deck.quantize = not deck.quantize
-                        self._send(CH[d], NOTE_SYNC,
-                                   LED_ON if deck.quantize else LED_OFF)
-                        print(f"[DDJ] deck {d} quantize={'ON' if deck.quantize else 'OFF'}")
+                        # Shift+Sync: arm loop start (rekordbox Loop In)
+                        deck.beat_quantize_loop_start()
+                        self._loop_recording[d] = True
+                        self._send(CH[d], NOTE_SYNC, LED_ON)
                         return
                     if self._loop_recording[d]:
-                        # Second Sync press: close the loop
+                        # Second Sync press: close the loop (Loop Out)
                         deck.beat_quantize_loop_end()
                         self._loop_recording[d] = False
                         self._send(CH[d], NOTE_SYNC, LED_OFF)
                         return
-                    # Normal Sync: THIS deck becomes master, other deck follows
-                    self._sync_deck(d)
+                    # Normal Sync: THIS deck becomes FOLLOWER, other deck is master
+                    # rekordbox behavior: SYNC makes deck align to whatever is playing
+                    self._sync_as_follower(d)
                     return
 
                 if note == NOTE_PFL and val:
                     if self._shift[d]:
-                        pass  # 4-deck toggle placeholder
+                        # Shift+PFL: Key Sync — match this deck's key to master
+                        self._key_sync(d)
                     else:
                         mixer = self.engine.mixer
                         mixer.pfl[d] = not mixer.pfl[d]
@@ -254,6 +305,7 @@ class DDJ200:
                         if self._eq_apply(d, 0, val):
                             self.engine.mixer.set_eq_raw(d, "high", val)
                     else:
+                        # HI  = vocals  (high frequency content — voice lives here)
                         self.engine.deck(d).set_stem_volume("vocals", val / 127.0)
                     return
                 if note == CC_EQ_MID:
@@ -261,24 +313,30 @@ class DDJ200:
                         if self._eq_apply(d, 1, val):
                             self.engine.mixer.set_eq_raw(d, "mid", val)
                     else:
-                        self.engine.deck(d).set_stem_volume("bass", val / 127.0)
+                        # MID = other/melody (synths, pads — midrange content)
+                        self.engine.deck(d).set_stem_volume("other", val / 127.0)
                     return
                 if note == CC_EQ_LOW:
                     if self._shift[d]:
                         if self._eq_apply(d, 2, val):
                             self.engine.mixer.set_eq_raw(d, "low", val)
                     else:
-                        self.engine.deck(d).set_stem_volume("drums", val / 127.0)
+                        # LOW = bass (sub-bass and kick body — low frequency content)
+                        self.engine.deck(d).set_stem_volume("bass", val / 127.0)
                     return
                 if note == CC_JOG_SIDE and not self._jog_touch[d]:
                     delta = val if val < 64 else val - 128
                     if self._shift[d]:
-                        if self.engine.deck(d).audio is not None:
-                            total = len(self.engine.deck(d).audio)
-                            seek  = delta * total // 256
-                            self.engine.deck(d).position = max(
-                                0.0, min(total - 2,
-                                         self.engine.deck(d).position + seek))
+                        # Shift + jog rim = key shift ±1 semitone per 5 ticks
+                        self._jog_key_accum[d] += delta
+                        while self._jog_key_accum[d] >= 5:
+                            self._jog_key_accum[d] -= 5
+                            deck = self.engine.deck(d)
+                            deck.key_shift = max(-12, min(12, deck.key_shift + 1))
+                        while self._jog_key_accum[d] <= -5:
+                            self._jog_key_accum[d] += 5
+                            deck = self.engine.deck(d)
+                            deck.key_shift = max(-12, min(12, deck.key_shift - 1))
                     else:
                         # Pitch bend: accumulated across callbacks so it
                         # outlasts the sync engine's nominal reset.
@@ -300,50 +358,105 @@ class DDJ200:
                 self.engine.mixer.set_crossfader_raw(raw)
                 return
             if note == CC_CFX[0]:
-                if self._shift[0]:
-                    self.engine.mixer.set_fx_raw(0, val)   # shift = color FX always
-                else:
-                    self.engine.deck(0).set_stem_volume("other", val / 127.0)
+                self.engine.mixer.set_fx_raw(0, val)   # CFX = color FX always
                 return
             if note == CC_CFX[1]:
-                if self._shift[1]:
-                    self.engine.mixer.set_fx_raw(1, val)   # shift = color FX always
-                else:
-                    self.engine.deck(1).set_stem_volume("other", val / 127.0)
+                self.engine.mixer.set_fx_raw(1, val)   # CFX = color FX always
                 return
 
-        # ── Hot cue pads ──────────────────────────────────────
+        # ── Performance pads — mode-aware ─────────────────────
         for d in range(2):
-            if status == PAD_N[d] and 0x00 <= note <= 0x07 and val:
-                self.engine.deck(d).hotcue_activate(note)
-                enabled = self.engine.deck(d).hot_cues[note] is not None
-                self._send(PAD_N[d], note, LED_RED if enabled else LED_OFF)
-                return
+            mode = self._pad_mode[d]
+
+            # Shift+hot-cue pad = clear cue (works in any mode while shift held)
             if status == PAD_S[d] and 0x00 <= note <= 0x07 and val:
                 self.engine.deck(d).hotcue_clear(note)
                 self._send(PAD_N[d], note, LED_OFF)
                 return
 
-            # ── Beat loop pads ────────────────────────────────
-            if status == PAD_N[d] and BL_BASE <= note <= BL_BASE + 7 and val:
-                idx = note - BL_BASE
-                if idx < len(BEAT_LOOP_SIZES):
-                    self.engine.deck(d).beatloop_toggle(BEAT_LOOP_SIZES[idx])
-                    lit = self.engine.deck(d).loop_active
-                    self._send(PAD_N[d], note, LED_ON if lit else LED_OFF)
+            # Pad mode cycle: Shift + pad-bank select buttons (BL_BASE pad 0)
+            # Use Shift + first pad of beat-loop bank to cycle modes
+            if status == PAD_N[d] and note == BL_BASE and self._shift[d] and val:
+                idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
+                self._pad_mode[d] = self._PAD_MODES[idx]
+                print(f"[DDJ] deck {d} pad mode → {self._pad_mode[d]}")
+                self._refresh_pad_leds(d)
                 return
 
-            # ── Sampler pads → Stem toggles ───────────────────
-            # Pad 0=drums  1=bass  2=other  3=vocals
-            if status == PAD_N[d] and SP_BASE <= note <= SP_BASE + 3 and val:
-                idx  = note - SP_BASE
-                name = STEM_NAMES[idx]
-                deck = self.engine.deck(d)
-                if deck.stems_ready:
-                    deck.toggle_stem(name)
-                    active = name in deck.active_stems
-                    self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
-                return
+            if status == PAD_N[d] and val:
+                if mode == "HOT CUE" and 0x00 <= note <= 0x07:
+                    self.engine.deck(d).hotcue_activate(note)
+                    enabled = self.engine.deck(d).hot_cues[note] is not None
+                    self._send(PAD_N[d], note, LED_RED if enabled else LED_OFF)
+                    return
+
+                if mode == "BEAT LOOP" and BL_BASE <= note <= BL_BASE + 7:
+                    idx = note - BL_BASE
+                    deck = self.engine.deck(d)
+                    if self._shift[d] and deck.loop_active:
+                        # Shift + lower half pads = halve; Shift + upper half = double
+                        if idx < 4:
+                            self._loop_halve(d)
+                        else:
+                            self._loop_double(d)
+                    elif idx < len(BEAT_LOOP_SIZES):
+                        deck.beatloop_toggle(BEAT_LOOP_SIZES[idx])
+                        lit = deck.loop_active
+                        self._send(PAD_N[d], note, LED_ON if lit else LED_OFF)
+                    return
+
+                if mode == "STEMS":
+                    if SP_BASE <= note <= SP_BASE + 3:
+                        # Pads 0-3: toggle stem
+                        idx  = note - SP_BASE
+                        name = STEM_NAMES[idx]
+                        deck = self.engine.deck(d)
+                        if deck.stems_ready:
+                            deck.toggle_stem(name)
+                            active = name in deck.active_stems
+                            self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                        return
+                    if SP_BASE + 4 <= note <= SP_BASE + 7:
+                        # Pads 4-7: hold to solo (mute all others)
+                        idx  = note - SP_BASE - 4
+                        name = STEM_NAMES[idx]
+                        deck = self.engine.deck(d)
+                        if deck.stems_ready:
+                            deck._solo_stem = name
+                            for s in STEM_NAMES:
+                                deck.stem_volumes[s] = 1.0 if s == name else 0.0
+                            self._send(PAD_N[d], note, LED_ON)
+                        return
+
+                if mode == "BEAT JUMP" and SP_BASE <= note <= SP_BASE + 7:
+                    idx = note - SP_BASE
+                    if idx < len(BEAT_JUMP_BARS):
+                        self.engine.deck(d).beat_jump(BEAT_JUMP_BARS[idx])
+                    return
+
+                if mode == "PAD FX" and SP_BASE <= note <= SP_BASE + 7:
+                    idx = note - SP_BASE
+                    self._pfx_held[d][idx] = True
+                    self._apply_pad_fx(d, idx, True)
+                    self._send(PAD_N[d], note, LED_ON)
+                    return
+
+            # Note-off for pad FX gate and stem solo release
+            if status == PAD_N[d] and not val:
+                if mode == "PAD FX" and SP_BASE <= note <= SP_BASE + 7:
+                    idx = note - SP_BASE
+                    self._pfx_held[d][idx] = False
+                    self._apply_pad_fx(d, idx, False)
+                    self._send(PAD_N[d], note, LED_OFF)
+                    return
+                if mode == "STEMS" and SP_BASE + 4 <= note <= SP_BASE + 7:
+                    # Release stem solo
+                    deck = self.engine.deck(d)
+                    deck._solo_stem = None
+                    for s in STEM_NAMES:
+                        deck.stem_volumes[s] = 1.0
+                    self._send(PAD_N[d], note, LED_OFF)
+                    return
 
         # ── Unrecognised — print so we can identify CFX/other controls ──
         print(f"[MIDI?] status=0x{status:02X}  note=0x{note:02X}  val={val}")
@@ -352,34 +465,113 @@ class DDJ200:
     #  Sync  (Mixxx master/follower model)
     # ──────────────────────────────────────────────────────────
 
+    def _sync_as_follower(self, d: int):
+        """
+        rekordbox SYNC behavior: pressing SYNC on deck d makes it a FOLLOWER.
+        The other deck (if playing with BPM) becomes the implicit master.
+        If the other deck is not playing, this deck becomes master.
+        """
+        other = self.engine.deck(1 - d)
+        this  = self.engine.deck(d)
+
+        if other.playing and other.bpm > 0 and other.audio is not None:
+            # Other deck is already playing — make this deck follow it
+            other.sync_master   = True
+            other.sync_follower = False
+            this.sync_follower  = True
+            this.sync_master    = False
+            self.engine.snap_sync(d)
+            self._synced[d]     = True
+            self._synced[1 - d] = True
+            self._send(CH[d],     NOTE_SYNC, LED_ON)
+            self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
+            print(f"[Sync] deck {d}=FOLLOWER  deck {1-d}=MASTER  "
+                  f"bpm={other.bpm * other.rate:.2f}")
+        elif this.bpm > 0 and this.audio is not None:
+            # Nothing else playing — this deck becomes master
+            this.sync_master    = True
+            this.sync_follower  = False
+            other.sync_follower = True
+            other.sync_master   = False
+            self._synced[d]     = True
+            self._synced[1 - d] = False
+            self._send(CH[d],     NOTE_SYNC, LED_ON)
+            self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
+            print(f"[Sync] deck {d}=MASTER (no other playing)")
+
     def _sync_deck(self, d: int):
-        """
-        Press SYNC on deck d → deck d becomes MASTER, other deck FOLLOWS.
-        Tempo-matches and bar-snaps immediately, then PLL maintains lock.
-        """
-        master   = self.engine.deck(d)
-        follower = self.engine.deck(1 - d)
+        """Legacy: keep for backwards compat, delegates to _sync_as_follower."""
+        self._sync_as_follower(d)
 
-        if master.bpm <= 0 or master.audio is None:
-            print(f"[Sync] deck {d} has no BPM — cannot set as master")
+    def _key_sync(self, d: int):
+        """
+        rekordbox KEY SYNC: shift pitch of deck d to match master key.
+        Computes semitone difference using Camelot wheel then applies key_shift.
+        """
+        this  = self.engine.deck(d)
+        other = self.engine.deck(1 - d)
+        if not this._camelot or not other._camelot:
+            print(f"[KeySync] missing Camelot data — cannot key sync")
             return
+        semitones = _camelot_semitone_diff(other._camelot, this._camelot)
+        this.key_shift = semitones
+        print(f"[KeySync] deck {d}: {this._camelot} → {other._camelot}  shift={semitones:+d}st")
 
-        # Mark roles (master never changes its own rate)
-        master.sync_master     = True
-        master.sync_follower   = False
-        follower.sync_follower = True
-        follower.sync_master   = False
+    def _loop_halve(self, d: int):
+        """Halve the current loop length (Shift + any beat loop pad when loop active)."""
+        self.engine.deck(d).loop_halve()
+        print(f"[Loop] deck {d} halved → {self.engine.deck(d)._current_loop_beats:.2f} beats")
 
-        # Snap follower's tempo + phase to master using engine's accurate method
-        self.engine.snap_sync(1 - d)
+    def _loop_double(self, d: int):
+        """Double the current loop length."""
+        self.engine.deck(d).loop_double()
+        print(f"[Loop] deck {d} doubled → {self.engine.deck(d)._current_loop_beats:.2f} beats")
 
-        # LEDs: master LED on, follower LED off
-        self._synced[d]     = True
-        self._synced[1 - d] = True
-        self._send(CH[d],     NOTE_SYNC, LED_ON)
-        self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
-        print(f"[Sync] deck {d}=MASTER  deck {1-d}=FOLLOWER  "
-              f"bpm={master.bpm * master.rate:.2f}")
+    # PAD_FX_PARAMS: (fx_type, depth 0-127) applied to mixer channel while held
+    # Matches rekordbox Beat FX palette on GRV6
+    _PAD_FX_MAP = [
+        ("FILTER",  13),   # Filter HPF sweep (left side)
+        ("FILTER", 114),   # Filter LPF sweep (right side)
+        ("ECHO",   102),   # Beat echo
+        ("ROLL",   102),   # Beat roll
+        ("REVERB", 102),   # Reverb
+        ("FLANGER",102),   # Flanger
+        ("PHASER",  102),  # Phaser
+        ("ECHO",   120),   # Echo out (heavy feedback)
+    ]
+
+    def _apply_pad_fx(self, d: int, pad_idx: int, on: bool):
+        if pad_idx >= len(self._PAD_FX_MAP):
+            return
+        fx_type, depth = self._PAD_FX_MAP[pad_idx]
+        if on:
+            self.engine.mixer.set_fx_type(d, fx_type)
+            self.engine.mixer.set_fx_raw(d, depth)
+        else:
+            self.engine.mixer.set_fx_raw(d, 64)   # centre = bypass
+
+    def _refresh_pad_leds(self, d: int):
+        """Light pads according to current mode after a mode change."""
+        mode = self._pad_mode[d]
+        for i in range(8):
+            self._send(PAD_N[d], i,            LED_OFF)
+            self._send(PAD_N[d], BL_BASE + i,  LED_OFF)
+            self._send(PAD_N[d], SP_BASE + i,  LED_OFF)
+        if mode == "HOT CUE":
+            for i in range(8):
+                lit = self.engine.deck(d).hot_cues[i] is not None
+                self._send(PAD_N[d], i, LED_RED if lit else LED_OFF)
+        elif mode == "BEAT LOOP":
+            deck = self.engine.deck(d)
+            for i, sz in enumerate(BEAT_LOOP_SIZES):
+                lit = deck.loop_active and abs(deck._current_loop_beats - sz) < 0.01
+                self._send(PAD_N[d], BL_BASE + i, LED_ON if lit else LED_OFF)
+        elif mode == "STEMS":
+            deck = self.engine.deck(d)
+            for i, name in enumerate(STEM_NAMES):
+                if deck.stems_ready:
+                    active = name in deck.active_stems
+                    self._send(PAD_N[d], SP_BASE + i, LED_ON if active else LED_OFF)
 
     def _eq_apply(self, deck: int, band: int, val: int) -> bool:
         """

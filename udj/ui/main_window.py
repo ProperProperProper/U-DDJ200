@@ -71,11 +71,13 @@ class MainWindow(QMainWindow):
         self.deck1_widget = DeckWidget(
             self.engine.deck(0), deck_label="1", accent="#00c8ff",
             on_load_track=lambda p: self._load_path(0, p),
-            vu_peak_fn=lambda: self.engine.vu_peak[0])
+            vu_peak_fn=lambda: self.engine.vu_peak[0],
+            engine=self.engine)
         self.deck2_widget = DeckWidget(
             self.engine.deck(1), deck_label="2", accent="#ff7a01",
             on_load_track=lambda p: self._load_path(1, p),
-            vu_peak_fn=lambda: self.engine.vu_peak[1])
+            vu_peak_fn=lambda: self.engine.vu_peak[1],
+            engine=self.engine)
 
         self.mixer_widget = MixerWidget(
             self.engine.mixer,
@@ -225,38 +227,61 @@ class MainWindow(QMainWindow):
         )
 
     def _analyse_library(self):
-        from ..library.db import all_tracks
+        from ..library.db import all_tracks, stems_are_cached
         from ..library.analyzer import analyse_track
+        from ..core.stems import preanalyse_stems
         from PyQt6.QtCore import QTimer
 
         tracks = all_tracks()
-        todo   = [t for t in tracks if not self._is_fully_analysed(t)]
-        if not todo:
+        todo_analysis = [t for t in tracks if not self._is_fully_analysed(t)]
+        todo_stems    = [t for t in tracks
+                         if not t.get("stems_cached") and not stems_are_cached(t["path"])]
+
+        total_analysis = len(todo_analysis)
+        total_stems    = len(todo_stems)
+        total          = total_analysis + total_stems
+
+        if not total:
             self._analysis_status.setText("")
             return
 
-        total    = len(todo)
-        done     = [0]
+        done = [0]
 
-        self._analysis_status.setStyleSheet("color:#ffaa00;")
-        self._analysis_status.setText(f"Analysing {total} tracks…  0 / {total}")
+        def _set_status(text, color="#ffaa00"):
+            QTimer.singleShot(0, lambda: (
+                self._analysis_status.setStyleSheet(f"color:{color};"),
+                self._analysis_status.setText(text)))
 
-        def _on_one(meta):
+        _set_status(f"Analysing {total_analysis} tracks + {total_stems} stems…  0 / {total}")
+
+        def _on_analysis(meta):
             done[0] += 1
-            remaining = total - done[0]
-            if remaining > 0:
-                QTimer.singleShot(0, lambda: (
-                    self._analysis_status.setText(
-                        f"Analysing library…  {done[0]} / {total}"),
-                    self.library._model.reload()))
-            else:
+            _check_done()
+            QTimer.singleShot(0, self.library._model.reload)
+
+        def _on_stems(path):
+            done[0] += 1
+            _check_done()
+
+        def _check_done():
+            if done[0] >= total:
                 QTimer.singleShot(0, lambda: (
                     self._analysis_status.setStyleSheet("color:#00dd88;"),
-                    self._analysis_status.setText(f"Library analysis complete  ✓  {total} tracks"),
+                    self._analysis_status.setText(
+                        f"Analysis complete  ✓  {total_analysis} tracks · {total_stems} stems"),
                     self.library._model.reload()))
+            else:
+                QTimer.singleShot(0, lambda:
+                    self._analysis_status.setText(
+                        f"Analysing…  {done[0]} / {total}"))
 
-        for t in todo:
-            analyse_track(t["path"], on_done=_on_one, force=True)
+        for t in todo_analysis:
+            analyse_track(t["path"], on_done=_on_analysis, force=True)
+
+        for t in todo_stems:
+            meta = t
+            preanalyse_stems(t["path"], self.engine.sample_rate,
+                             track_meta=meta, on_done=_on_stems)
 
     def _check_midi(self):
         if self.controller._connected:

@@ -19,7 +19,9 @@ from mutagen import File as MutagenFile
 from .db import upsert_track, get_track, AUDIO_EXTS
 from scipy.signal import resample_poly
 
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analyzer")
+import os as _os
+_WORKERS = max(1, int(_os.cpu_count() * 0.8))   # 80% of cores
+_executor = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="analyzer")
 
 
 def _read_tags(path: str) -> dict:

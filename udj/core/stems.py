@@ -23,6 +23,15 @@ from typing import Callable, Optional
 
 STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
+# Bump this version string whenever the stems post-processing pipeline changes.
+# Cached .npz files store this version; mismatches trigger automatic re-analysis.
+STEMS_VERSION = "v3"   # htdemucs_ft, shifts=4, vocal HP/LP/gate -30dBFS
+
+# Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
+# One track at a time gives consistent throughput without thrashing.
+import concurrent.futures as _cf
+_stems_executor = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="stems")
+
 # ─── public entry point ───────────────────────────────────────────────────────
 
 def separate_async(
@@ -32,7 +41,12 @@ def separate_async(
     on_error: Optional[Callable[[Exception], None]] = None,
     track_meta: Optional[dict] = None,
 ):
-    """Kick off stem separation in a daemon thread."""
+    """
+    Kick off stem separation in a daemon thread.
+    If stems are already cached on disk, loads them instantly.
+    Otherwise runs demucs and saves to disk cache for next time.
+    """
+    # Live load: use separate thread so it doesn't block the pre-analysis queue
     threading.Thread(
         target=_worker,
         args=(file_path, sample_rate, on_done, on_error, track_meta),
@@ -40,9 +54,97 @@ def separate_async(
     ).start()
 
 
+def preanalyse_stems(file_path: str, sample_rate: int,
+                     track_meta: Optional[dict] = None,
+                     on_done: Optional[Callable] = None):
+    """
+    Pre-analyse stems for a track and save to disk cache.
+    Queued through the single-worker executor — one track at a time.
+    """
+    _stems_executor.submit(_preanalyse_worker,
+                           file_path, sample_rate, track_meta, on_done)
+
+
+def _preanalyse_worker(file_path, sample_rate, track_meta, on_done):
+    try:
+        cache_path = _cache_path(file_path)
+        if cache_path.exists():
+            # Validate version — if stale, delete and re-run
+            existing = _load_cache(cache_path, sample_rate)
+            if existing is not None:
+                print(f"[Stems] already cached (current version): {cache_path.name}")
+                if on_done:
+                    on_done(file_path)
+                return
+            cache_path.unlink(missing_ok=True)
+        result = _separate_demucs(file_path, sample_rate, track_meta)
+        _save_cache(result, cache_path)
+        from ..library.db import mark_stems_cached
+        mark_stems_cached(file_path)
+        print(f"[Stems] pre-analysed and cached: {cache_path.name}")
+        if on_done:
+            on_done(file_path)
+    except Exception as e:
+        print(f"[Stems] pre-analysis failed for {file_path}: {e}")
+
+
+def _cache_path(file_path: str):
+    from ..library.db import stems_cache_path
+    return stems_cache_path(file_path)
+
+
+def _save_cache(stems: dict, path):
+    """Save stems dict to compressed .npz file with version tag."""
+    arrays = {k: v for k, v in stems.items()
+              if isinstance(v, np.ndarray)}
+    vocal_present = stems.get("_vocal_present", True)
+    np.savez_compressed(str(path),
+                        vocal_present=np.array([vocal_present]),
+                        _version=np.array([STEMS_VERSION], dtype="U16"),
+                        **arrays)
+
+
+def _load_cache(path, sample_rate: int) -> dict | None:
+    """
+    Load stems from .npz cache file.
+    Returns None if the cache was built with a different STEMS_VERSION,
+    triggering automatic re-analysis.
+    """
+    data = np.load(str(path), allow_pickle=False)
+    # Version check — if missing or mismatched, invalidate
+    if "_version" not in data.files:
+        return None
+    cached_version = str(data["_version"][0])
+    if cached_version != STEMS_VERSION:
+        print(f"[Stems] cache version mismatch ({cached_version} != {STEMS_VERSION}) — re-analysing")
+        return None
+    result = {}
+    for k in data.files:
+        if k == "_version":
+            continue
+        if k == "vocal_present":
+            result["_vocal_present"] = bool(data[k][0])
+        else:
+            result[k] = data[k].astype(np.float32)
+    return result
+
+
 def _worker(file_path, sample_rate, on_done, on_error, track_meta):
     try:
+        cache = _cache_path(file_path)
+        if cache.exists():
+            result = _load_cache(cache, sample_rate)
+            if result is not None:
+                print(f"[Stems] loaded from cache: {cache.name}")
+                on_done(result)
+                return
+            # Version mismatch — delete stale cache and re-run
+            cache.unlink(missing_ok=True)
+        print(f"[Stems] running demucs htdemucs_ft (will cache result)")
         result = _separate_demucs(file_path, sample_rate, track_meta)
+        _save_cache(result, cache)
+        from ..library.db import mark_stems_cached
+        mark_stems_cached(file_path)
         on_done(result)
     except Exception as e:
         print(f"[Stems] demucs failed ({e}), falling back to DSP approximation")
@@ -77,7 +179,15 @@ def _separate_demucs(file_path: str, target_sr: int,
         device = "cpu"
     print(f"[Stems] using device={device}")
 
-    model = get_model("htdemucs")
+    # htdemucs_ft = fine-tuned hybrid transformer — best available open-source model.
+    # Serato DJ Pro uses the same demucs technology; ft model is the equivalent of
+    # their quality tier. Falls back to htdemucs if ft is not cached.
+    try:
+        model = get_model("htdemucs_ft")
+        print("[Stems] using htdemucs_ft (fine-tuned, Serato-grade quality)")
+    except Exception:
+        model = get_model("htdemucs")
+        print("[Stems] using htdemucs (standard quality)")
     model.eval()
 
     wav, sr = torchaudio.load(file_path)
@@ -89,15 +199,16 @@ def _separate_demucs(file_path: str, target_sr: int,
     if sr != model_sr:
         wav = torchaudio.functional.resample(wav, sr, model_sr)
 
-    # shifts=2: average over 2 time-shifted runs — significant quality gain.
-    # MPS makes this cost-free compared to CPU single-run.
+    # shifts=4: average 4 time-shifted runs — maximum separation quality.
+    # overlap=0.5: 50% chunk overlap — eliminates boundary artifacts.
+    # On Apple Silicon MPS, shifts=4 is ~2× slower but dramatically cleaner.
     with torch.no_grad():
         sources = apply_model(
             model,
             wav.unsqueeze(0),
             device=device,
-            shifts=2,
-            overlap=0.25,
+            shifts=4,
+            overlap=0.5,
             progress=False,
         )[0]   # (num_stems, 2, N)
 
@@ -182,8 +293,8 @@ def _process_drums(audio: np.ndarray, sr: int,
 
     audio64 = audio.astype(np.float64)
 
-    # 1. Remove extreme sub-bass artifact (< 30 Hz)
-    sos_hp = butter(4, 30.0 / nyq, "high", output="sos")
+    # 1. Remove sub-bass bleed below 60 Hz (kick has body at 60-200 Hz, sub below is bass bleed)
+    sos_hp = butter(4, 60.0 / nyq, "high", output="sos")
     audio64 = np.stack([
         sosfilt(sos_hp, audio64[:, 0]),
         sosfilt(sos_hp, audio64[:, 1]),
@@ -255,7 +366,7 @@ def _transient_enhance(audio: np.ndarray, sr: int,
 def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
     """
     Bass post-processing:
-    - High-cut above 400 Hz to remove drum and synth bleed
+    - High-cut above 300 Hz to tightly remove drum and synth bleed
     - Sub-bass mono-sum below 120 Hz (professional mastering practice)
     - Gentle sub boost +2 dB below 60 Hz for punch (compensate for demucs energy loss)
     """
@@ -264,8 +375,8 @@ def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
 
     audio64 = audio.astype(np.float64)
 
-    # 1. High-cut: remove bleed above 400 Hz
-    sos_lp = butter(6, min(400.0 / nyq, 0.99), "low", output="sos")
+    # 1. High-cut: remove bleed above 300 Hz (tighter than 400 Hz — less synth bleed)
+    sos_lp = butter(8, min(300.0 / nyq, 0.99), "low", output="sos")
     audio64 = np.stack([
         sosfilt(sos_lp, audio64[:, 0]),
         sosfilt(sos_lp, audio64[:, 1]),
@@ -325,24 +436,53 @@ def _process_other(audio: np.ndarray, sr: int) -> np.ndarray:
 
 def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     """
-    Vocals post-processing:
-    - For instrumental tracks (detected later), this stem will be auto-gated.
-    - Apply a gentle noise gate here: signals below −40 dBFS are silenced.
-    - This removes the constant low-level bleed demucs leaks into the vocals stem
-      from dense instrumental material.
+    Vocals post-processing for clean voice isolation:
+    1. High-pass 80 Hz — remove low-end bleed (kick, bass leaking into vocals stem)
+    2. Low-pass 12 kHz — remove hiss/cymbal bleed above vocal range
+    3. Presence boost +2 dB at 2–5 kHz — forward vocal clarity (telephone band)
+    4. Noise gate at −30 dBFS with 20ms smoothing — kills demucs bleed in silent passages
     """
+    from scipy.signal import sosfilt, butter
+    nyq = sr / 2
     audio64 = audio.astype(np.float64)
 
-    # Noise gate: compute 10ms RMS windows, gate below −40 dBFS
-    window = max(1, int(sr * 0.010))
-    gate_threshold = 10.0 ** (-40.0 / 20.0)
+    # 1. HP at 80 Hz — cut kick/bass bleed (vocals don't live below 80 Hz)
+    sos_hp = butter(4, 80.0 / nyq, "high", output="sos")
+    audio64 = np.stack([
+        sosfilt(sos_hp, audio64[:, 0]),
+        sosfilt(sos_hp, audio64[:, 1]),
+    ], axis=1)
+
+    # 2. LP at 12 kHz — cut hiss and cymbal bleed above vocal range
+    sos_lp = butter(2, min(12000.0 / nyq, 0.99), "low", output="sos")
+    audio64 = np.stack([
+        sosfilt(sos_lp, audio64[:, 0]),
+        sosfilt(sos_lp, audio64[:, 1]),
+    ], axis=1)
+
+    # 3. Presence boost +2 dB at 2–5 kHz (vocal intelligibility band)
+    sos_pres_hp = butter(2, 2000.0 / nyq, "high", output="sos")
+    sos_pres_lp = butter(2, min(5000.0 / nyq, 0.99), "low",  output="sos")
+    pres_L = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, audio64[:, 0]))
+    pres_R = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, audio64[:, 1]))
+    pres_gain = 10.0 ** (2.0 / 20.0) - 1.0
+    audio64[:, 0] += pres_L * pres_gain
+    audio64[:, 1] += pres_R * pres_gain
+
+    # 4. Noise gate at −30 dBFS — remove demucs bleed in silent/instrumental passages
+    # 20ms window + 30ms smooth to avoid pumping artifacts
+    window = max(1, int(sr * 0.020))
+    gate_threshold = 10.0 ** (-30.0 / 20.0)
 
     rms_env = np.sqrt(np.convolve(audio64[:, 0] ** 2,
                                   np.ones(window) / window,
                                   mode="same"))
-    # Smooth gate: 0 below threshold, 1 above, 10ms crossfade
-    gate = np.clip((rms_env - gate_threshold * 0.5) / (gate_threshold * 0.5),
-                   0.0, 1.0)
+    # Smooth gate envelope: 30ms attack/release via exponential filter
+    from scipy.signal import lfilter
+    alpha = 1.0 - np.exp(-1.0 / max(sr * 0.030, 1.0))
+    gate_raw = (rms_env > gate_threshold).astype(np.float64)
+    gate, _ = lfilter([alpha], [1.0, -(1.0 - alpha)], gate_raw)
+    gate = np.clip(gate, 0.0, 1.0)
 
     audio64[:, 0] *= gate
     audio64[:, 1] *= gate

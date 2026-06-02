@@ -84,11 +84,12 @@ class MixerWidget(QWidget):
         # No shift  → stem volume (these knobs)
         # Shift+EQ  → EQ band (handled in MIDI handler)
         # Shift+VOX → Color FX (handled in MIDI handler)
+        # HI knob = VOX, MID knob = OTHER, LOW knob = BASS — matches physical EQ layout
+        # Drums are controlled via pads only (same as GRV6 Stem ISO)
         _STEM_META = [
             ("VOX",   "#aa44ff", "vocals"),
-            ("BASS",  "#ff9900", "bass"),
-            ("DRUM",  "#ff4444", "drums"),
             ("OTHER", "#44aaff", "other"),
+            ("BASS",  "#ff9900", "bass"),
         ]
         self._stem_knobs = [[], []]
         for label, color, stem_name in _STEM_META:

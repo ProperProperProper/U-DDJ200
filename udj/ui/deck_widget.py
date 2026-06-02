@@ -31,6 +31,7 @@ class DeckWidget(QWidget):
                  accent: str = "#00c8ff",
                  on_load_track=None,
                  vu_peak_fn=None,   # callable → float (current linear peak)
+                 engine=None,
                  parent=None):
         super().__init__(parent)
         self.deck = deck
@@ -38,6 +39,7 @@ class DeckWidget(QWidget):
         self._deck_label = deck_label
         self._on_load_track = on_load_track
         self._vu_peak_fn = vu_peak_fn
+        self._engine = engine
 
         self.setAcceptDrops(True)
         self._build_ui()
@@ -82,9 +84,35 @@ class DeckWidget(QWidget):
         self.lbl_key.setAlignment(Qt.AlignmentFlag.AlignRight |
                                    Qt.AlignmentFlag.AlignVCenter)
 
+        # Key shift controls
+        key_shift_col = QVBoxLayout()
+        key_shift_col.setSpacing(1)
+        key_shift_col.setContentsMargins(0, 0, 0, 0)
+        btn_key_up = QPushButton("▲")
+        btn_key_dn = QPushButton("▼")
+        for b in (btn_key_up, btn_key_dn):
+            b.setFixedSize(20, 16)
+            b.setStyleSheet(
+                "QPushButton{background:#0e0e18;border:1px solid #2a2a40;"
+                "color:#33aacc;font-size:9px;border-radius:2px;}"
+                "QPushButton:pressed{background:#1a2a44;}")
+        btn_key_up.clicked.connect(lambda: self._key_shift(+1))
+        btn_key_dn.clicked.connect(lambda: self._key_shift(-1))
+        self._btn_key_reset = QPushButton("0")
+        self._btn_key_reset.setFixedSize(20, 14)
+        self._btn_key_reset.setStyleSheet(
+            "QPushButton{background:#0e0e18;border:1px solid #2a2a40;"
+            "color:#555;font-size:7px;border-radius:2px;}"
+            "QPushButton:pressed{background:#1a1a2a;}")
+        self._btn_key_reset.clicked.connect(lambda: self._key_shift(0, reset=True))
+        key_shift_col.addWidget(btn_key_up)
+        key_shift_col.addWidget(self._btn_key_reset)
+        key_shift_col.addWidget(btn_key_dn)
+
         row1.addWidget(self.lbl_deck)
         row1.addLayout(title_artist, 1)
         row1.addWidget(self.lbl_key)
+        row1.addLayout(key_shift_col)
         root.addLayout(row1)
 
         # ── BPM · Time · CLIP ─────────────────────────────────
@@ -164,6 +192,12 @@ class DeckWidget(QWidget):
             "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;")
         self.badge_loop_arm.setVisible(False)
 
+        self.badge_stems = QLabel("⏳ STEMS")
+        self.badge_stems.setStyleSheet(
+            "color:#ffaa00;background:#1a1000;border:1px solid #aa6600;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;")
+        self.badge_stems.setVisible(False)
+
 
         self._norm_btn = QPushButton("NORM")
         self._norm_btn.setCheckable(True)
@@ -182,6 +216,7 @@ class DeckWidget(QWidget):
         badges.addWidget(self.badge_follower)
         badges.addWidget(self.badge_loop)
         badges.addWidget(self.badge_loop_arm)
+        badges.addWidget(self.badge_stems)
         badges.addStretch()
         badges.addWidget(self._norm_btn)
         root.addLayout(badges)
@@ -191,11 +226,12 @@ class DeckWidget(QWidget):
 
         # ── Performance pads — DDJ-200 layout ────────────────
         # Mode selector row
-        self._pad_mode = "BEAT LOOP"  # "HOT CUE" | "BEAT LOOP" | "SAMPLER"
+        self._pad_mode = "BEAT LOOP"  # "HOT CUE" | "BEAT LOOP" | "STEMS" | "BEAT JUMP" | "PAD FX"
         mode_row = QHBoxLayout()
         mode_row.setSpacing(3)
         self._mode_btns: dict[str, QPushButton] = {}
-        for mode, color in [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"), ("SAMPLER","#bb88ff")]:
+        for mode, color in [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"), ("STEMS","#bb88ff"),
+                             ("BEAT JUMP","#ffcc00"), ("PAD FX","#ff6600")]:
             b = QPushButton(mode)
             b.setCheckable(True)
             b.setChecked(mode == "BEAT LOOP")
@@ -214,8 +250,17 @@ class DeckWidget(QWidget):
         _HC_COLORS = ["#ff3333","#ff8800","#ffdd00","#00cc44",
                       "#00ccff","#4488ff","#aa44ff","#ff44aa"]
         _BL_LABELS = ["1/4","1/2","1","2","4","8","16","32"]
-        _STEM_LABELS= ["DRUMS","BASS","OTHER","VOCALS","","","",""]
-        _STEM_COLORS= ["#ff4444","#ff9900","#44aaff","#aa44ff","","","",""]
+        _STEM_LABELS= ["DRUMS","BASS","OTHER","VOCALS","DRUMS►","BASS►","OTHER►","VOX►"]
+        _STEM_COLORS= ["#ff4444","#ff9900","#44aaff","#aa44ff",
+                       "#ff4444","#ff9900","#44aaff","#aa44ff"]
+        # Beat jump: pads 0-7 = [-1,-2,-4,-8 bars, +1,+2,+4,+8 bars]
+        _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4","+8"]
+        _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0, 8.0]
+        # Pad FX: each pad applies a different FX while held
+        _PFX_LABELS = ["FILTER↓","FILTER↑","ECHO","ROLL",
+                       "REVERB","FLANGE","PHASE","ECHO OUT"]
+        _PFX_COLORS = ["#4499ff","#ff9944","#44ffbb","#ffcc00",
+                       "#bb44ff","#ff4488","#ffdd44","#ffffff"]
 
         self._pad_btns: list[QPushButton] = []
         pads_outer = QVBoxLayout()
@@ -236,6 +281,7 @@ class DeckWidget(QWidget):
                 btn.customContextMenuRequested.connect(
                     lambda _, i=n: self._pad_right_click(i))
                 btn.pressed.connect(lambda i=n: self._pad_press(i))
+                btn.released.connect(lambda i=n: self._pad_release(i))
                 pad_row.addWidget(btn)
                 self._pad_btns.append(btn)
             pad_row.addStretch()
@@ -248,6 +294,11 @@ class DeckWidget(QWidget):
         self._bl_labels  = _BL_LABELS
         self._stem_labels= _STEM_LABELS
         self._stem_colors= _STEM_COLORS
+        self._bj_labels  = _BJ_LABELS
+        self._bj_bars    = _BJ_BARS
+        self._pfx_labels = _PFX_LABELS
+        self._pfx_colors = _PFX_COLORS
+        self._pfx_active = [False] * 8   # which pad FX pads are currently held
 
         root.addStretch()
 
@@ -263,15 +314,12 @@ class DeckWidget(QWidget):
 
     def _on_track_loaded(self):
         d = self.deck
+        d.key_shift = 0
+        self.badge_stems.setVisible(True)   # show until stems arrive
         self.lbl_title.setText(d.title or "—")
         self.lbl_artist.setText(d.artist)
         self.lbl_bpm.setText(f"{d.bpm:.2f}" if d.bpm else "---.--")
-        camelot = getattr(d, '_camelot', '') or ''
-        energy  = getattr(d, 'energy', 0) or 0
-        key_str = f"{d.key}  {camelot}" if camelot else d.key
-        if energy:
-            key_str += f"  E{energy}"
-        self.lbl_key.setText(key_str)
+        self._update_key_display()
         self._refresh_pads()
         self._norm_btn.setChecked(False)
         self._norm_btn.setVisible(False)
@@ -279,12 +327,16 @@ class DeckWidget(QWidget):
         for btn in self._stem_btns.values():
             btn.setVisible(False)
             btn.setChecked(True)
+        # Show STEMS badge if track has audio but stems not yet ready
+        if self.deck.audio is not None and not self.deck.stems_ready:
+            self.badge_stems.setVisible(True)
 
     def _on_stems_ready(self):
+        self.badge_stems.setVisible(False)
         for name, btn in self._stem_btns.items():
             btn.setVisible(True)
             btn.setChecked(name in self.deck.active_stems)
-        if self._pad_mode == "SAMPLER":
+        if self._pad_mode == "STEMS":
             self._refresh_pads()
 
     # ── Pad mode ──────────────────────────────────────────────
@@ -305,11 +357,74 @@ class DeckWidget(QWidget):
             if n < len(BEAT_LOOP_SIZES):
                 self.deck.beatloop_toggle(BEAT_LOOP_SIZES[n])
             self._refresh_pads()
-        elif mode == "SAMPLER":
-            name = ["drums","bass","other","vocals"][n] if n < 4 else None
-            if name and self.deck.stems_ready:
-                self.deck.toggle_stem(name)
-                self._refresh_pads()
+        elif mode == "STEMS":
+            stem_names = ["drums","bass","other","vocals"]
+            if n < 4:
+                name = stem_names[n]
+                if self.deck.stems_ready:
+                    self.deck.toggle_stem(name)
+                    self._refresh_pads()
+            elif n < 8:
+                # Pads 4-7: hold to solo that stem (mute all others)
+                name = stem_names[n - 4]
+                if self.deck.stems_ready:
+                    self._stem_solo_start(name)
+        elif mode == "BEAT JUMP":
+            if n < len(self._bj_bars):
+                self.deck.beat_jump(self._bj_bars[n])
+        elif mode == "PAD FX":
+            self._pfx_active[n] = True
+            self._apply_pad_fx(n, True)
+            self._refresh_pads()
+
+    def _pad_release(self, n: int):
+        mode = self._pad_mode
+        if mode == "STEMS" and n >= 4:
+            stem_names = ["drums","bass","other","vocals"]
+            self._stem_solo_end(stem_names[n - 4])
+        elif mode == "PAD FX":
+            self._pfx_active[n] = False
+            self._apply_pad_fx(n, False)
+            self._refresh_pads()
+
+    def _stem_solo_start(self, name: str):
+        """Temporarily mute all stems except `name`."""
+        self.deck._solo_stem = name
+        for s in ["drums","bass","other","vocals"]:
+            self.deck.stem_volumes[s] = 1.0 if s == name else 0.0
+
+    def _stem_solo_end(self, name: str):
+        """Restore all stems after solo hold."""
+        self.deck._solo_stem = None
+        for s in ["drums","bass","other","vocals"]:
+            self.deck.stem_volumes[s] = 1.0
+        self._refresh_pads()
+
+    # PAD_FX_PARAMS: (fx_type, depth) — applied to channel FX while held
+    _PAD_FX_PARAMS = [
+        ("FILTER", 0.1),   # Filter sweep down
+        ("FILTER", 0.9),   # Filter sweep up
+        ("DELAY",  0.8),
+        ("REVERB", 0.8),
+        ("FLANGER",0.8),
+        ("PHASER", 0.8),
+        ("DRIVE",  0.8),
+        ("DELAY",  0.95),  # Echo out (heavy delay)
+    ]
+
+    def _apply_pad_fx(self, n: int, on: bool):
+        """Gate FX on/off for pad n. Requires mixer reference."""
+        # Reach up to find the mixer via the engine (set during connect)
+        engine = getattr(self, '_engine', None)
+        if engine is None:
+            return
+        deck_idx = self.deck.deck_id
+        if on:
+            fx_type, depth = self._PAD_FX_PARAMS[n]
+            engine.mixer.set_fx_type(deck_idx, fx_type)
+            engine.mixer.set_fx_raw(deck_idx, int(depth * 127))
+        else:
+            engine.mixer.set_fx_raw(deck_idx, 64)  # bypass (centre)
 
     def _pad_right_click(self, n: int):
         if self._pad_mode == "HOT CUE":
@@ -357,13 +472,14 @@ class DeckWidget(QWidget):
                 btn.setText(lbl)
                 btn.setChecked(active)
 
-            elif mode == "SAMPLER":
+            elif mode == "STEMS":
+                stem_names = ["drums","bass","other","vocals"]
+                col   = self._stem_colors[i]
+                lbl   = self._stem_labels[i]
+                ready = self.deck.stems_ready
                 if i < 4:
-                    name   = ["drums","bass","other","vocals"][i]
-                    col    = self._stem_colors[i]
-                    lbl    = self._stem_labels[i]
-                    active = name in self.deck.active_stems if self.deck.stems_ready else False
-                    ready  = self.deck.stems_ready
+                    name   = stem_names[i]
+                    active = name in self.deck.active_stems if ready else False
                     if ready and active:
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col}55;border:2px solid {col};"
@@ -381,11 +497,91 @@ class DeckWidget(QWidget):
                     btn.setText(lbl if ready else "…")
                     btn.setChecked(active)
                 else:
+                    # Pads 4-7: stem solo (hold)
+                    solo = getattr(self.deck, '_solo_stem', None)
+                    name = stem_names[i - 4]
+                    active = (solo == name)
+                    if ready and active:
+                        btn.setStyleSheet(
+                            f"QPushButton{{background:{col}88;border:2px solid {col};"
+                            f"border-radius:4px;color:#fff;font-size:7px;font-weight:bold;}}"
+                            f"QPushButton:pressed{{background:{col}cc;}}")
+                    elif ready:
+                        btn.setStyleSheet(
+                            f"QPushButton{{background:#111;border:1px solid {col}44;"
+                            f"border-radius:4px;color:{col}66;font-size:7px;font-weight:bold;}}"
+                            f"QPushButton:pressed{{background:#1a1a22;}}")
+                    else:
+                        btn.setStyleSheet(
+                            "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
+                            "border-radius:4px;color:#222;font-size:7px;}")
+                    btn.setText(lbl if ready else "…")
+                    btn.setChecked(active)
+
+            elif mode == "BEAT JUMP":
+                col  = "#ffcc00"
+                lbl  = self._bj_labels[i] if i < len(self._bj_labels) else ""
+                has_bpm = self.deck.bpm > 0
+                if has_bpm:
                     btn.setStyleSheet(
-                        "QPushButton{background:#0e0e12;border:1px solid #111;"
-                        "border-radius:4px;}")
-                    btn.setText("")
-                    btn.setChecked(False)
+                        f"QPushButton{{background:#1a1600;border:1px solid {col}55;"
+                        f"border-radius:4px;color:{col}cc;font-size:11px;font-weight:bold;}}"
+                        f"QPushButton:pressed{{background:{col}44;}}")
+                else:
+                    btn.setStyleSheet(
+                        "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
+                        "border-radius:4px;color:#333;font-size:11px;}")
+                btn.setText(lbl)
+                btn.setChecked(False)
+
+            elif mode == "PAD FX":
+                col    = self._pfx_colors[i] if i < len(self._pfx_colors) else "#555"
+                lbl    = self._pfx_labels[i] if i < len(self._pfx_labels) else ""
+                active = self._pfx_active[i]
+                if active:
+                    btn.setStyleSheet(
+                        f"QPushButton{{background:{col}66;border:2px solid {col};"
+                        f"border-radius:4px;color:#fff;font-size:7px;font-weight:bold;}}"
+                        f"QPushButton:pressed{{background:{col}99;}}")
+                else:
+                    btn.setStyleSheet(
+                        f"QPushButton{{background:#111;border:1px solid {col}44;"
+                        f"border-radius:4px;color:{col}99;font-size:7px;font-weight:bold;}}"
+                        f"QPushButton:pressed{{background:{col}33;}}")
+                btn.setText(lbl)
+                btn.setChecked(active)
+
+    def _key_shift(self, delta: int, reset: bool = False):
+        if reset:
+            self.deck.key_shift = 0
+        else:
+            self.deck.key_shift = max(-12, min(12, self.deck.key_shift + delta))
+        self._update_key_display()
+
+    def _update_key_display(self):
+        d = self.deck
+        camelot = getattr(d, '_camelot', '') or ''
+        energy  = getattr(d, 'energy', 0) or 0
+        key_str = f"{d.key}  {camelot}" if camelot else d.key
+        if energy:
+            key_str += f"  E{energy}"
+        shift = d.key_shift
+        if shift != 0:
+            key_str += f"  {shift:+d}st"
+            self.lbl_key.setStyleSheet(
+                "color:#ffcc44;font-size:16px;font-weight:bold;min-width:40px;")
+            self._btn_key_reset.setStyleSheet(
+                "QPushButton{background:#2a1a00;border:1px solid #ffcc44;"
+                "color:#ffcc44;font-size:7px;border-radius:2px;}"
+                "QPushButton:pressed{background:#3a2a00;}")
+        else:
+            self.lbl_key.setStyleSheet(
+                "color:#33aacc;font-size:16px;font-weight:bold;min-width:40px;")
+            self._btn_key_reset.setStyleSheet(
+                "QPushButton{background:#0e0e18;border:1px solid #2a2a40;"
+                "color:#555;font-size:7px;border-radius:2px;}"
+                "QPushButton:pressed{background:#1a1a2a;}")
+        self.lbl_key.setText(key_str)
 
     def _on_norm_toggle(self, on: bool):
         self.deck.gain_enabled = on
@@ -414,11 +610,12 @@ class DeckWidget(QWidget):
         self.lbl_rate.setText(f"{sign}{pct:.2f}%")
         if d.bpm > 0:
             self.lbl_bpm.setText(f"{d.bpm * d.rate:.2f}")
+        self._update_key_display()
         self.badge_loop.setVisible(d.loop_active)
         self.badge_loop_arm.setVisible(d._loop_recording)
         self.badge_master.setVisible(d.sync_master)
         self.badge_follower.setVisible(d.sync_follower)
-        if self._pad_mode == "BEAT LOOP":
+        if self._pad_mode in ("BEAT LOOP", "STEMS", "PAD FX"):
             self._refresh_pads()
 
         # CLIP indicator

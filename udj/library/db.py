@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 
-DB_PATH = Path.home() / ".udj" / "library.db"
+DB_PATH    = Path.home() / ".udj" / "library.db"
+STEMS_DIR  = Path.home() / ".udj" / "stems"   # pre-computed stems cache
 
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".ogg", ".m4a", ".opus"}
 
@@ -24,6 +25,16 @@ def _conn() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     return con
 
+
+def stems_cache_path(track_path: str) -> Path:
+    """Return the .npz path for pre-computed stems of a track."""
+    import hashlib
+    h = hashlib.sha1(track_path.encode()).hexdigest()[:16]
+    STEMS_DIR.mkdir(parents=True, exist_ok=True)
+    return STEMS_DIR / f"{h}.npz"
+
+def stems_are_cached(track_path: str) -> bool:
+    return stems_cache_path(track_path).exists()
 
 def init_db():
     with _conn() as con:
@@ -52,7 +63,8 @@ def init_db():
                 date_added          REAL
             )
         """)
-        for col, defval in [("first_beat_sec", "0.0"),
+        for col, defval in [("stems_cached", "0"),
+                            ("first_beat_sec", "0.0"),
                             ("beat_positions_json", "'[]'"),
                             ("phrase_positions_json", "'[]'"),
                             ("loudness_lufs", "NULL"),
@@ -148,6 +160,12 @@ def search(query: str = "", order: str = "artist") -> list[dict]:
 def all_tracks(order: str = "artist") -> list[dict]:
     return search("", order)
 
+
+def mark_stems_cached(path: str):
+    """Mark that stems are available on disk for this track."""
+    with _conn() as con:
+        con.execute("UPDATE tracks SET stems_cached=1 WHERE path=?", (path,))
+        con.commit()
 
 def get_track(path: str) -> Optional[dict]:
     with _conn() as con:

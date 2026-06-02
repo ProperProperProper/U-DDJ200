@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QSortFilterProxyModel, QAbstractTableModel, QModelI
 from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
-from ..library.db import all_tracks, init_db, clear_library
+from ..library.db import all_tracks, init_db, clear_library, stems_are_cached
 from ..library.scanner import scan_directory
 
 
@@ -22,17 +22,20 @@ COL_MAP = ["_status", "title", "artist", "bpm", "key", "camelot", "energy", "lou
 
 
 def _analysis_status(row: dict) -> tuple[str, str]:
-    """Return (dot_char, tooltip_colour) indicating analysis completeness."""
+    """Return (dot_char, color) indicating analysis completeness including stems."""
     has_beats   = bool(row.get("beat_positions_json") not in (None, "", "[]"))
     has_phrases = bool(row.get("phrase_positions_json") not in (None, "", "[]"))
     has_lufs    = row.get("loudness_lufs") is not None
     has_camelot = bool(row.get("camelot"))
     has_bpm     = bool(row.get("bpm"))
+    has_stems   = bool(row.get("stems_cached"))
 
+    if has_beats and has_phrases and has_lufs and has_camelot and has_stems:
+        return "●", "#00dd88"   # fully analysed including stems — green
     if has_beats and has_phrases and has_lufs and has_camelot:
-        return "●", "#00dd88"   # fully analysed — green
+        return "●", "#44aaff"   # BPM/key done, stems pending — blue
     if has_bpm and has_beats:
-        return "●", "#ffaa00"   # beats done, missing some extras — amber
+        return "●", "#ffaa00"   # beats done, missing extras — amber
     if has_bpm:
         return "●", "#ff6600"   # BPM only — orange
     return "○", "#555555"       # not analysed — grey
@@ -224,8 +227,29 @@ class LibraryWidget(QWidget):
         def _done():
             self._progress.setVisible(False)
             self._model.reload()
+            # Kick off BPM/key analysis + stems pre-analysis for all new tracks
+            self._analyse_after_scan()
 
         scan_directory(folder, on_progress=_prog, on_done=_done)
+
+    def _analyse_after_scan(self):
+        """After scanning, run BPM analysis and stem pre-analysis on all new tracks."""
+        from ..library.analyzer import analyse_track
+        from ..core.stems import preanalyse_stems
+        from ..core.engine import SAMPLE_RATE
+
+        tracks = all_tracks()
+        for t in tracks:
+            # BPM/key/grid analysis
+            needs_analysis = not (t.get("bpm") and
+                                  t.get("beat_positions_json") not in (None, "", "[]"))
+            if needs_analysis:
+                analyse_track(t["path"], on_done=lambda _: None, force=False)
+
+            # Stems pre-analysis
+            if not t.get("stems_cached") and not stems_are_cached(t["path"]):
+                preanalyse_stems(t["path"], SAMPLE_RATE,
+                                 track_meta=t, on_done=lambda _: None)
 
     def _selected_track(self) -> Optional[dict]:
         idxs = self._table.selectedIndexes()
