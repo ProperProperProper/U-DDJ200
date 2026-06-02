@@ -120,24 +120,18 @@ class BeatGridWidget(QWidget):
             vis_hi = pos + half_w_samp
 
             if deck.beats is not None and len(deck.beats) >= 2:
-                # Find the beat index at the current playhead — use this as the
-                # bar-phase anchor so bar markers are drawn relative to the
-                # musical downbeat, not just beats[0] array index.
-                # downbeat_offset tells us which phase (0-3) beat[0] is on.
-                db_off = getattr(deck, 'downbeat_offset', 0) or 0
+                # beats[0] is always bar-1 beat-1 — the analyzer rotates the
+                # array by downbeat_offset so i%4==0 correctly marks bar-1.
                 lo_i = max(0, int(np.searchsorted(deck.beats, vis_lo)) - 1)
                 hi_i = min(len(deck.beats),
                            int(np.searchsorted(deck.beats, vis_hi)) + 2)
                 for i in range(lo_i, hi_i):
                     bp     = deck.beats[i]
                     px     = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    # Bar-1 when (i + db_off) % 4 == 0 — anchored to musical bar
-                    is_bar = ((i + db_off) % 4 == 0)
+                    is_bar = (i % 4 == 0)
                     if 0 <= px < W:
                         _draw_tick(qp, px, row_top, row_h, is_bar, col)
             else:
-                # Arithmetic fallback — use first_beat as the bar anchor
-                beat_at_pos = int((pos - first_beat) / beat_len) if beat_len > 0 else 0
                 rel_start   = vis_lo - first_beat
                 beat_start  = max(0, int(rel_start / beat_len) - 1)
                 beat_end    = beat_start + _WINDOW_BEATS + 4

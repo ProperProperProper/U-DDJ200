@@ -41,8 +41,9 @@ BUFFER_SIZE = 1024
 #   - one-shot bar-snap on play-start or significant master rate change
 #   - continuous smooth nudge: up to _PHASE_CORRECTION per callback toward zero error
 #     This corrects imperfect snaps and BPM analysis drift silently (no rate wobble).
-_PHASE_GAIN    = 0.5    # P-gain: apply 50 % of error each callback
-_PHASE_CAP     = 0.05   # max correction per callback in beats (≈ 23 ms at 130 BPM)
+# Mixxx exact constants from synccontrol.cpp
+_SYNC_GAIN     = 0.5    # kSyncAdjustmentMultiplier
+_SYNC_CAP      = 0.02   # kSyncAdjustmentCap — max ±2% rate tweak per callback
 _PHASE_DEAD    = 0.001  # dead-zone: ignore error < 0.1 % of a beat (float noise)
 _SNAP_RATE_THR = 0.003  # re-snap when master rate changes > 0.3 %
 
@@ -320,16 +321,7 @@ class AudioEngine:
             # Divide out the follower's key_shift so deck.rate represents pure
             # tempo adjustment; key_shift is applied separately in deck.read().
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
-            raw_nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
-
-            # Half/double BPM correction: if analysis gave wrong octave, the raw
-            # nominal lands near 0.5 or 2.0. Correct by using the nearest
-            # musically-equivalent BPM (halve or double) so rate stays near 1.0.
-            nominal = raw_nominal
-            if raw_nominal > 1.6:
-                nominal = raw_nominal / 2.0   # follower BPM was detected at half-tempo
-            elif raw_nominal < 0.625:
-                nominal = raw_nominal * 2.0   # follower BPM was detected at double-tempo
+            nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
             follower.rate = max(0.5, min(2.0, nominal))
 
             # Detect master rate change
@@ -346,8 +338,10 @@ class AudioEngine:
             # Fixes imperfect snaps and slow BPM-analysis drift without wobble.
             # At 43 Hz with cap=0.01 beats, max correction = 0.43 beats/s.
             # A 20 ms snap error at 130 BPM (≈ 0.043 beats) corrects in ~100 ms.
+            # Use follower's own beat length for phase measurement fallback
+            follower_beat = sr * 60.0 / max(follower.bpm, 1.0)
             f_bd  = beat_distance(follower.position, follower.beats,
-                                  follower.first_beat, master_beat)
+                                  follower.first_beat, follower_beat)
             error = m_bd - f_bd
             if error >  0.5: error -= 1.0
             if error < -0.5: error += 1.0
@@ -363,13 +357,11 @@ class AudioEngine:
                     master.rate, follower.rate,
                     float(error), float(nominal))
 
-            # Skip while scratching — user has deliberate position control
+            # Mixxx-exact phase correction: adjust rate by ±kSyncAdjustmentCap.
+            # Rate tweak (not position nudge) — inaudible at ±2%, converges in ~1 bar.
             if not follower._scratch_active and abs(error) > _PHASE_DEAD:
-                correction = float(np.clip(error * _PHASE_GAIN,
-                                           -_PHASE_CAP, _PHASE_CAP))
-                audio_len  = len(follower.audio)
-                follower.position = max(0.0, min(float(audio_len - 2),
-                                                 follower.position + correction * master_beat))
+                adj = float(np.clip(error * _SYNC_GAIN, -_SYNC_CAP, _SYNC_CAP))
+                follower.rate = max(0.5, min(2.0, follower.rate * (1.0 + adj)))
 
     @staticmethod
     def _do_snap(master: Deck, follower: Deck,
@@ -429,12 +421,8 @@ class AudioEngine:
         target_bpm       = master.bpm * master.rate * master_key_ratio
 
         # Tempo match — divide out follower key_shift (applied separately in deck.read)
-        raw_nominal = (target_bpm / follower.bpm) / follower_key_ratio
-        if raw_nominal > 1.6:
-            raw_nominal /= 2.0
-        elif raw_nominal < 0.625:
-            raw_nominal *= 2.0
-        follower.rate = max(0.5, min(2.0, raw_nominal))
+        nominal = (target_bpm / follower.bpm) / follower_key_ratio
+        follower.rate = max(0.5, min(2.0, nominal))
 
         # Grid-interpolated bar-snap — uses stored beat positions, not arithmetic.
         # For the same track on both decks this gives sample-exact alignment.
