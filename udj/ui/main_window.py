@@ -219,12 +219,14 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _is_fully_analysed(meta: dict) -> bool:
+        from ..library.db import ANALYSIS_VERSION
         return bool(
             meta.get("bpm") and
             meta.get("beat_positions_json") not in (None, "", "[]") and
             meta.get("phrase_positions_json") not in (None, "", "[]") and
             meta.get("camelot") and
-            meta.get("loudness_lufs") is not None
+            meta.get("loudness_lufs") is not None and
+            meta.get("analysis_version") == ANALYSIS_VERSION
         )
 
     def _analyse_library(self, force_all: bool = False, on_complete=None):

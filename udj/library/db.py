@@ -16,6 +16,10 @@ from typing import Optional
 DB_PATH    = Path.home() / ".udj" / "library.db"
 STEMS_DIR  = Path.home() / ".udj" / "stems"   # pre-computed stems cache
 
+# Bump when beat grid / downbeat detection algorithm changes.
+# Tracks with a different stored version are re-analysed on startup.
+ANALYSIS_VERSION = "v2"   # v2: two-pass downbeat (kick + chroma novelty)
+
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".ogg", ".m4a", ".opus"}
 
 
@@ -64,6 +68,7 @@ def init_db():
             )
         """)
         for col, defval in [("stems_cached", "0"),
+                            ("analysis_version", "''"),
                             ("first_beat_sec", "0.0"),
                             ("beat_positions_json", "'[]'"),
                             ("phrase_positions_json", "'[]'"),
@@ -90,12 +95,14 @@ def upsert_track(meta: dict):
                                 duration, bitrate, first_beat_sec,
                                 beat_positions_json, phrase_positions_json,
                                 loudness_lufs, gain_db, energy, camelot,
-                                cue_points_json, downbeat_offset, date_added)
+                                cue_points_json, downbeat_offset,
+                                analysis_version, date_added)
             VALUES (:path, :title, :artist, :album, :bpm, :key,
                     :duration, :bitrate, :first_beat_sec,
                     :beat_positions_json, :phrase_positions_json,
                     :loudness_lufs, :gain_db, :energy, :camelot,
-                    :cue_points_json, :downbeat_offset, :date_added)
+                    :cue_points_json, :downbeat_offset,
+                    :analysis_version, :date_added)
             ON CONFLICT(path) DO UPDATE SET
                 title                 = excluded.title,
                 artist                = excluded.artist,
@@ -112,7 +119,8 @@ def upsert_track(meta: dict):
                 energy                = excluded.energy,
                 camelot               = excluded.camelot,
                 cue_points_json       = excluded.cue_points_json,
-                downbeat_offset       = excluded.downbeat_offset
+                downbeat_offset       = excluded.downbeat_offset,
+                analysis_version      = excluded.analysis_version
         """, {**meta,
               "first_beat_sec":        meta.get("first_beat_sec", 0.0),
               "beat_positions_json":   meta.get("beat_positions_json", "[]"),
@@ -123,6 +131,7 @@ def upsert_track(meta: dict):
               "camelot":               meta.get("camelot"),
               "cue_points_json":       meta.get("cue_points_json", "[]"),
               "downbeat_offset":       int(meta.get("downbeat_offset", 0) or 0),
+              "analysis_version":      meta.get("analysis_version", ANALYSIS_VERSION),
               "date_added":            meta.get("date_added", time.time())})
         con.commit()
 

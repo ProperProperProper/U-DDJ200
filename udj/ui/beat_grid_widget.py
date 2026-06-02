@@ -59,7 +59,7 @@ class BeatGridWidget(QWidget):
                 continue
             sr       = deck.sample_rate
             pos      = deck.position
-            beat_len = sr * 60.0 / max(deck.bpm * deck.rate, 1.0)
+            beat_len = sr * 60.0 / max(deck.bpm, 1.0)
             if deck.beats is not None and len(deck.beats) >= 2:
                 beat_idx = max(0, int(np.searchsorted(deck.beats, pos, side="right")) - 1)
                 bar_idx  = beat_idx // 4
@@ -110,13 +110,11 @@ class BeatGridWidget(QWidget):
                 continue
 
             sr         = deck.sample_rate
-            # Use EFFECTIVE BPM (bpm × rate) for pixel mapping.
-            # deck.beats is in original sample space; pos advances at deck.rate
-            # samples per output sample. Using effective beat_len means both
-            # synced decks have the same px/beat and the same scroll speed,
-            # so their grids line up visually when phase-locked.
-            eff_bpm    = max(deck.bpm * deck.rate, 1.0)
-            beat_len   = sr * 60.0 / eff_bpm
+            # beat_len uses original file BPM — beats[] is in original sample
+            # space and pos advances at deck.rate samples/output-sample, so
+            # scroll speed = rate/beat_len = rate*bpm/(sr*60). After sync,
+            # rate_A/beat_len_A == rate_B/beat_len_B automatically. Correct.
+            beat_len   = sr * 60.0 / max(deck.bpm, 1.0)
             pos        = deck.position
             first_beat = deck.first_beat
 

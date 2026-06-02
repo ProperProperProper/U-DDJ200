@@ -16,7 +16,7 @@ import librosa
 import soundfile as sf
 from mutagen import File as MutagenFile
 
-from .db import upsert_track, get_track, AUDIO_EXTS
+from .db import upsert_track, get_track, AUDIO_EXTS, ANALYSIS_VERSION
 from scipy.signal import resample_poly
 
 import os as _os
@@ -116,52 +116,82 @@ def _detect_downbeat_offset(y: np.ndarray, sr: int,
     """
     Find the downbeat offset (0–3): which beat in each group of 4 is beat 1.
 
-    Strategy (Mixxx AnalyzerBeats / djay downbeat detection):
-    1. Compute per-beat low-frequency energy (sub-bass 20–200 Hz via mel bands).
-       Kick drums dominate the sub-bass on beat 1 in most EDM.
-    2. Sum energy for each beat phase 0, 1, 2, 3 across the whole track.
-    3. The phase with the highest total low-freq energy is the downbeat.
-    4. Confidence check: if the winner's margin is < 15%, fallback to offset 0
-       (trust the beat tracker's first beat as downbeat).
+    Two-pass approach — handles 4-on-the-floor techno/house correctly:
 
-    Returns an integer 0–3. Caller rotates the beat array by this offset so that
-    beat index % 4 == 0 always lands on beat 1 of the bar.
+    Pass 1 — kick energy (sub-bass 20–200 Hz).
+      Works for breakbeats, hip-hop, anything with non-uniform kick pattern.
+      Fails on 4-on-the-floor (kick on every beat = flat energy across phases).
+
+    Pass 2 — harmonic novelty (chroma flux).
+      Bar boundaries in any genre tend to have melodic/harmonic changes.
+      Averaged chroma flux at each of the 4 phases identifies which phase
+      sees the most harmonic change = bar-1. Works on 4-on-the-floor.
+
+    The pass with higher confidence (margin) wins. If neither is confident
+    (margin < 12%), fallback to offset 0.
     """
     if not beat_times or len(beat_times) < 8 or bpm <= 0:
         return 0
 
     beats = np.array(beat_times)
     n     = len(beats)
+    beat_sec = 60.0 / bpm
 
-    # Low-frequency onset envelope (kick energy): restrict to sub-bass mel bands
+    def _beat_frames(t):
+        f0 = int(np.clip(librosa.time_to_frames(t, sr=sr, hop_length=hop),
+                         0, 1_000_000))
+        f1 = int(np.clip(librosa.time_to_frames(t + beat_sec * 0.9, sr=sr, hop_length=hop),
+                         f0 + 1, 1_000_000))
+        return f0, f1
+
+    # ── Pass 1: kick (sub-bass) energy ───────────────────────────
     mel = librosa.feature.melspectrogram(
-        y=y, sr=sr, hop_length=hop,
-        n_mels=128, fmin=20, fmax=200,   # sub-bass only
-        power=2.0)
-    low_env = np.mean(mel, axis=0)       # (n_frames,)
+        y=y, sr=sr, hop_length=hop, n_mels=128, fmin=20, fmax=200, power=2.0)
+    low_env = np.mean(mel, axis=0)
 
-    # Per-beat energy: average low_env over the frame window of each beat
-    beat_energy = np.zeros(n)
+    kick_energy = np.zeros(n)
     for i, t in enumerate(beats):
-        f0 = librosa.time_to_frames(t, sr=sr, hop_length=hop)
-        beat_sec = 60.0 / bpm
-        f1 = librosa.time_to_frames(t + beat_sec * 0.9, sr=sr, hop_length=hop)
-        f0 = int(np.clip(f0, 0, len(low_env) - 1))
-        f1 = int(np.clip(f1, f0 + 1, len(low_env)))
-        beat_energy[i] = float(low_env[f0:f1].mean())
+        f0, f1 = _beat_frames(t)
+        f1 = min(f1, len(low_env))
+        if f1 > f0:
+            kick_energy[i] = float(low_env[f0:f1].mean())
 
-    # Accumulate energy per phase (0..3)
-    phase_energy = np.zeros(4)
+    phase_kick = np.zeros(4)
     for i in range(n):
-        phase_energy[i % 4] += beat_energy[i]
+        phase_kick[i % 4] += kick_energy[i]
 
-    winner = int(np.argmax(phase_energy))
-    margin = (phase_energy[winner] - np.sort(phase_energy)[-2]) / (phase_energy[winner] + 1e-6)
+    w_kick = int(np.argmax(phase_kick))
+    m_kick = ((phase_kick[w_kick] - np.sort(phase_kick)[-2])
+              / (phase_kick[w_kick] + 1e-9))
 
-    if margin < 0.15:
-        return 0   # low confidence — don't shift
+    # ── Pass 2: harmonic novelty (chroma flux) ───────────────────
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop,
+                                         bins_per_octave=24)
+    # Chroma flux: L1 difference between adjacent frames
+    chroma_flux = np.sum(np.abs(np.diff(chroma, axis=1)), axis=0)  # (n_frames-1,)
 
-    return winner
+    novelty = np.zeros(n)
+    for i, t in enumerate(beats):
+        f0, f1 = _beat_frames(t)
+        f1 = min(f1, len(chroma_flux))
+        if f1 > f0:
+            novelty[i] = float(chroma_flux[f0:f1].mean())
+
+    phase_nov = np.zeros(4)
+    for i in range(n):
+        phase_nov[i % 4] += novelty[i]
+
+    w_nov = int(np.argmax(phase_nov))
+    m_nov = ((phase_nov[w_nov] - np.sort(phase_nov)[-2])
+             / (phase_nov[w_nov] + 1e-9))
+
+    # ── Pick winner ───────────────────────────────────────────────
+    CONF = 0.12   # minimum margin to trust a result
+    if m_kick >= m_nov and m_kick >= CONF:
+        return w_kick
+    if m_nov >= m_kick and m_nov >= CONF:
+        return w_nov
+    return 0   # neither confident — trust beat tracker's first beat
 
 
 # ── Mixed In Key — Camelot wheel ────────────────────────────────────────────
@@ -605,6 +635,7 @@ def _analyse(path: str) -> dict:
         meta["phrase_positions_json"] = json.dumps(phrase_list)
         meta["cue_points_json"]       = json.dumps(cue_list)
         meta["downbeat_offset"]       = db_offset
+        meta["analysis_version"]      = ANALYSIS_VERSION
         print(f"[Analyzer] BPM={bpm:.2f}  first_beat={first_beat_sec:.3f}s  "
               f"beats={len(beat_list)}  phrases={len(phrase_list)}  "
               f"cues={len(cue_list)}  downbeat_offset={db_offset}"
