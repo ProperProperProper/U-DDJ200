@@ -3,6 +3,7 @@
 **Professional DJ application for macOS — Pioneer DDJ-200 controller, rekordbox-grade feature set modelled on the DDJ-GRV6.**
 
 Built with Python 3.9, PyQt6, demucs htdemucs_ft, sounddevice, scipy, librosa.
+<img width="1468" height="833" alt="Screenshot 2026-06-02 at 10 41 21 PM" src="https://github.com/user-attachments/assets/731037b5-a337-45db-a332-9e86a8faa33f" />
 
 ---
 
