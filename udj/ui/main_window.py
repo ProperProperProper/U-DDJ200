@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self.library = LibraryWidget(
             on_load_deck1=lambda t: self._load_track(0, t),
             on_load_deck2=lambda t: self._load_track(1, t),
+            on_analyse_all=lambda: self._analyse_library(force_all=True),
         )
         self.library.setMinimumHeight(200)
         root.addWidget(self.library, 1)
@@ -226,16 +227,21 @@ class MainWindow(QMainWindow):
             meta.get("loudness_lufs") is not None
         )
 
-    def _analyse_library(self):
+    def _analyse_library(self, force_all: bool = False):
         from ..library.db import all_tracks, stems_are_cached
         from ..library.analyzer import analyse_track
         from ..core.stems import preanalyse_stems
         from PyQt6.QtCore import QTimer
 
         tracks = all_tracks()
-        todo_analysis = [t for t in tracks if not self._is_fully_analysed(t)]
-        todo_stems    = [t for t in tracks
-                         if not t.get("stems_cached") and not stems_are_cached(t["path"])]
+        if force_all:
+            # "Analyse Now" button — queue everything, including already-analysed tracks
+            todo_analysis = tracks
+            todo_stems    = tracks
+        else:
+            todo_analysis = [t for t in tracks if not self._is_fully_analysed(t)]
+            todo_stems    = [t for t in tracks
+                             if not t.get("stems_cached") and not stems_are_cached(t["path"])]
 
         total_analysis = len(todo_analysis)
         total_stems    = len(todo_stems)

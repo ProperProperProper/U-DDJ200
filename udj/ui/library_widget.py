@@ -124,11 +124,13 @@ class LibraryWidget(QWidget):
     def __init__(self,
                  on_load_deck1: Optional[Callable[[dict], None]] = None,
                  on_load_deck2: Optional[Callable[[dict], None]] = None,
+                 on_analyse_all: Optional[Callable] = None,
                  parent=None):
         super().__init__(parent)
-        self.on_load_deck1 = on_load_deck1
-        self.on_load_deck2 = on_load_deck2
-        self._active_deck = 0
+        self.on_load_deck1   = on_load_deck1
+        self.on_load_deck2   = on_load_deck2
+        self._on_analyse_all = on_analyse_all
+        self._active_deck    = 0
         self._build_ui()
         init_db()
         self._model.reload()
@@ -151,6 +153,11 @@ class LibraryWidget(QWidget):
         self._btn_scan.setObjectName("BtnScan")
         self._btn_scan.clicked.connect(self._scan)
 
+        self._btn_analyse = QPushButton("⟳ Analyse All")
+        self._btn_analyse.setObjectName("BtnScan")
+        self._btn_analyse.setToolTip("Re-run BPM analysis + stem generation for all tracks")
+        self._btn_analyse.clicked.connect(self._analyse_now)
+
         self._btn_d1 = QPushButton("→ Deck 1")
         self._btn_d1.setObjectName("BtnLoadDeck")
         self._btn_d1.clicked.connect(lambda: self._load_selected(0))
@@ -166,6 +173,7 @@ class LibraryWidget(QWidget):
 
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
+        bar.addWidget(self._btn_analyse)
         bar.addWidget(self._btn_d1)
         bar.addWidget(self._btn_d2)
         bar.addWidget(self._progress)
@@ -231,6 +239,11 @@ class LibraryWidget(QWidget):
             self._analyse_after_scan()
 
         scan_directory(folder, on_progress=_prog, on_done=_done)
+
+    def _analyse_now(self):
+        """Triggered by Analyse All button — delegates to main_window callback."""
+        if self._on_analyse_all:
+            self._on_analyse_all()
 
     def _analyse_after_scan(self):
         """After scanning, run BPM analysis and stem pre-analysis on all new tracks."""
