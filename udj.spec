@@ -61,6 +61,8 @@ a = Analysis(
         'numpy.linalg',
         # sqlite3
         'sqlite3',
+        # psutil (CPU monitoring)
+        'psutil',
     ],
     hookspath=[],
     hooksconfig={},

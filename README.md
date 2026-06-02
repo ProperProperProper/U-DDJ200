@@ -232,6 +232,25 @@ Applies EBU R128 gain offset to match tracks to a target LUFS. Off by default �
 
 ---
 
+## Analyse All Button
+
+The **⟳ Analyse All** button in the library toolbar queues every track for full BPM + stems re-analysis.
+
+| State | Appearance |
+|-------|-----------|
+| Idle | Grey — "⟳ Analyse All" |
+| Running | Green highlight — "⟳ 3 / 24" (live count) |
+| Done | Resets to idle |
+
+While running, a **progress bar** (`X / N`) and a **CPU % badge** appear next to the button:
+- Green = CPU < 50%
+- Amber = CPU 50–80%
+- Red = CPU > 80%
+
+Both disappear when analysis completes.
+
+---
+
 ## Track Analysis (pre-analysis before performance)
 
 All analysis runs before you perform:

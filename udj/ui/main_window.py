@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         self.library = LibraryWidget(
             on_load_deck1=lambda t: self._load_track(0, t),
             on_load_deck2=lambda t: self._load_track(1, t),
-            on_analyse_all=lambda: self._analyse_library(force_all=True),
+            on_analyse_all=lambda on_complete=None: self._analyse_library(force_all=True, on_complete=on_complete),
         )
         self.library.setMinimumHeight(200)
         root.addWidget(self.library, 1)
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
             meta.get("loudness_lufs") is not None
         )
 
-    def _analyse_library(self, force_all: bool = False):
+    def _analyse_library(self, force_all: bool = False, on_complete=None):
         from ..library.db import all_tracks, stems_are_cached
         from ..library.analyzer import analyse_track
         from ..core.stems import preanalyse_stems
@@ -249,6 +249,8 @@ class MainWindow(QMainWindow):
 
         if not total:
             self._analysis_status.setText("")
+            if on_complete:
+                on_complete()
             return
 
         done = [0]
@@ -259,6 +261,7 @@ class MainWindow(QMainWindow):
                 self._analysis_status.setText(text)))
 
         _set_status(f"Analysing {total_analysis} tracks + {total_stems} stems…  0 / {total}")
+        QTimer.singleShot(0, lambda: self.library.analysis_progress_start(total))
 
         def _on_analysis(meta):
             done[0] += 1
@@ -268,18 +271,29 @@ class MainWindow(QMainWindow):
         def _on_stems(path):
             done[0] += 1
             _check_done()
+            QTimer.singleShot(0, self.library._model.reload)
 
         def _check_done():
             if done[0] >= total:
-                QTimer.singleShot(0, lambda: (
-                    self._analysis_status.setStyleSheet("color:#00dd88;"),
+                def _finish():
+                    self._analysis_status.setStyleSheet("color:#00dd88;")
                     self._analysis_status.setText(
-                        f"Analysis complete  ✓  {total_analysis} tracks · {total_stems} stems"),
-                    self.library._model.reload()))
+                        f"Analysis complete  ✓  {total_analysis} tracks · {total_stems} stems")
+                    self.library._model.reload()
+                    self.library.analysis_progress_done()
+                    if on_complete:
+                        on_complete()
+                QTimer.singleShot(0, _finish)
             else:
-                QTimer.singleShot(0, lambda:
-                    self._analysis_status.setText(
-                        f"Analysing…  {done[0]} / {total}"))
+                n = done[0]
+                def _upd(n=n):
+                    self._analysis_status.setText(f"Analysing…  {n} / {total}")
+                    try:
+                        self.library._btn_analyse.setText(f"⟳  {n} / {total}")
+                        self.library.analysis_progress_update(n)
+                    except Exception:
+                        pass
+                QTimer.singleShot(0, _upd)
 
         for t in todo_analysis:
             analyse_track(t["path"], on_done=_on_analysis, force=True)

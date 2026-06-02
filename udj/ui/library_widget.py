@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QSortFilterProxyModel, QAbstractTableModel, QModelI
 from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
+import psutil as _psutil
 from ..library.db import all_tracks, init_db, clear_library, stems_are_cached
 from ..library.scanner import scan_directory
 
@@ -156,6 +157,12 @@ class LibraryWidget(QWidget):
         self._btn_analyse = QPushButton("⟳ Analyse All")
         self._btn_analyse.setObjectName("BtnScan")
         self._btn_analyse.setToolTip("Re-run BPM analysis + stem generation for all tracks")
+        self._btn_analyse.setStyleSheet(
+            "QPushButton{background:#111;border:1px solid #2a2a35;color:#888;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
+            "QPushButton:disabled{background:#1a2a1a;border:1px solid #00aa55;"
+            "color:#00dd88;}"
+        )
         self._btn_analyse.clicked.connect(self._analyse_now)
 
         self._btn_d1 = QPushButton("→ Deck 1")
@@ -167,9 +174,27 @@ class LibraryWidget(QWidget):
         self._btn_d2.clicked.connect(lambda: self._load_selected(1))
 
         self._progress = QProgressBar()
-        self._progress.setFixedWidth(120)
+        self._progress.setFixedWidth(200)
         self._progress.setVisible(False)
+        self._progress.setFormat("%v / %m")
         self._progress.setObjectName("ScanProgress")
+        self._progress.setStyleSheet(
+            "QProgressBar{background:#111;border:1px solid #2a2a35;border-radius:3px;"
+            "color:#00dd88;font-size:9px;text-align:center;height:18px;}"
+            "QProgressBar::chunk{background:#00aa44;border-radius:2px;}"
+        )
+
+        self._cpu_label = QLabel("")
+        self._cpu_label.setVisible(False)
+        self._cpu_label.setFixedWidth(72)
+        self._cpu_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cpu_label.setStyleSheet(
+            "color:#ffaa00;background:#1a1200;border:1px solid #664400;"
+            "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;")
+
+        self._cpu_timer = QTimer(self)
+        self._cpu_timer.setInterval(1000)
+        self._cpu_timer.timeout.connect(self._update_cpu)
 
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
@@ -177,6 +202,7 @@ class LibraryWidget(QWidget):
         bar.addWidget(self._btn_d1)
         bar.addWidget(self._btn_d2)
         bar.addWidget(self._progress)
+        bar.addWidget(self._cpu_label)
 
         # Table
         self._model = TrackModel()
@@ -241,9 +267,18 @@ class LibraryWidget(QWidget):
         scan_directory(folder, on_progress=_prog, on_done=_done)
 
     def _analyse_now(self):
-        """Triggered by Analyse All button — delegates to main_window callback."""
+        """Triggered by Analyse All button — highlights while running, resets when done."""
+        self._btn_analyse.setText("⟳ Analysing…")
+        self._btn_analyse.setEnabled(False)   # :disabled style = green highlight
         if self._on_analyse_all:
-            self._on_analyse_all()
+            self._on_analyse_all(on_complete=self._analyse_done)
+
+    def _analyse_done(self):
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: (
+            self._btn_analyse.setText("⟳ Analyse All"),
+            self._btn_analyse.setEnabled(True),
+        ))
 
     def _analyse_after_scan(self):
         """After scanning, run BPM analysis and stem pre-analysis on all new tracks."""
@@ -287,3 +322,37 @@ class LibraryWidget(QWidget):
 
     def load_selected(self, deck: int):
         self._load_selected(deck)
+
+    def analysis_progress_start(self, total: int):
+        self._progress.setMaximum(total)
+        self._progress.setValue(0)
+        self._progress.setVisible(True)
+        self._cpu_label.setVisible(True)
+        _psutil.cpu_percent(interval=None)   # prime the counter
+        self._cpu_timer.start()
+
+    def analysis_progress_update(self, done: int):
+        self._progress.setValue(done)
+
+    def analysis_progress_done(self):
+        self._cpu_timer.stop()
+        self._progress.setVisible(False)
+        self._progress.setValue(0)
+        self._cpu_label.setVisible(False)
+        self._cpu_label.setText("")
+
+    def _update_cpu(self):
+        pct = _psutil.cpu_percent(interval=None)
+        self._cpu_label.setText(f"CPU {pct:.0f}%")
+        if pct >= 80:
+            self._cpu_label.setStyleSheet(
+                "color:#ff4400;background:#1a0800;border:1px solid #aa2200;"
+                "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;")
+        elif pct >= 50:
+            self._cpu_label.setStyleSheet(
+                "color:#ffaa00;background:#1a1200;border:1px solid #664400;"
+                "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;")
+        else:
+            self._cpu_label.setStyleSheet(
+                "color:#00dd88;background:#001a0e;border:1px solid #006633;"
+                "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;")
