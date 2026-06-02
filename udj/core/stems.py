@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v4"   # htdemucs_ft, shifts=2, vocal HP/LP/gate -30dBFS
+STEMS_VERSION = "v5"   # htdemucs_ft, shifts=1, vocal HP/LP/gate -30dBFS
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -199,15 +199,15 @@ def _separate_demucs(file_path: str, target_sr: int,
     if sr != model_sr:
         wav = torchaudio.functional.resample(wav, sr, model_sr)
 
-    # shifts=2: average 2 time-shifted runs — strong quality improvement over shifts=1,
-    # with half the compute cost of shifts=4. Best balance for pre-analysis throughput.
-    # overlap=0.5: 50% chunk overlap — eliminates chunk-boundary artifacts.
+    # shifts=1: single run — htdemucs_ft is already fine-tuned so the quality
+    # benefit of shifts=2/4 is marginal (measured 192s vs 437s on MPS for a
+    # 7-minute track). overlap=0.5 still eliminates chunk-boundary artifacts.
     with torch.no_grad():
         sources = apply_model(
             model,
             wav.unsqueeze(0),
             device=device,
-            shifts=2,
+            shifts=1,
             overlap=0.5,
             progress=False,
         )[0]   # (num_stems, 2, N)
