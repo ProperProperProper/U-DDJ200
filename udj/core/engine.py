@@ -146,71 +146,69 @@ def _bar_len_from_beats(beats: np.ndarray, bar1_i: int,
     return beat_len_fallback * 4.0
 
 
+def _preceding_bar_start(position: float,
+                          beats: "np.ndarray | None",
+                          first_beat: float,
+                          beat_len: float) -> tuple[int, float, float]:
+    """
+    Return (bar1_index, bar1_sample_pos, bar_length_samples) for the bar
+    that PRECEDES (contains) position.  Never returns the next bar.
+
+    Using nearest_bar_start() was wrong: past the halfway point of a bar it
+    returns the next bar's start, making m_offset negative → clamped to 0 →
+    follower always snaps to beat-1 regardless of master's actual bar phase.
+    """
+    if beats is not None and len(beats) >= 4:
+        # idx = last beat at or before position
+        idx      = max(0, int(np.searchsorted(beats, position, side="right")) - 1)
+        idx      = min(idx, len(beats) - 1)
+        bar1_i   = (idx // 4) * 4                # floor to preceding bar boundary
+        bar1_pos = float(beats[bar1_i])
+        bar_len  = _bar_len_from_beats(beats, bar1_i, beat_len * 4.0)
+        return bar1_i, bar1_pos, bar_len
+    # Arithmetic fallback
+    if beat_len > 0:
+        bar_len = beat_len * 4.0
+        rel     = position - first_beat
+        bar_idx = max(0, int(rel / bar_len))
+        bar1_pos = first_beat + bar_idx * bar_len
+        return bar_idx * 4, bar1_pos, bar_len
+    return 0, first_beat, beat_len * 4.0
+
+
 def _snap_to_grid(master: "Deck", follower: "Deck", sr: int) -> float:
     """
-    Snap follower so its bar-1 aligns with master's bar-1.
+    Snap follower so its bar phase matches master's bar phase exactly.
 
-    Algorithm:
-      1. Find master's nearest bar-1 (from stored beats or arithmetic fallback).
-      2. Compute m_offset = master.position - master_bar1  (clamped ≥ 0).
-      3. Find follower's NEAREST bar-1 using nearest_bar_start() — not just the
-         current bar; follower may be closer to the next bar boundary.
-      4. Scale offset: scaled = m_offset × (f_bar_len / m_bar_len).
-      5. snapped = follower_bar1 + scaled_offset.
+    Algorithm (fixed):
+      1. Find the bar that CONTAINS master (preceding bar start, not nearest).
+      2. m_offset = master.position - master_bar_start  (always ≥ 0, < bar_len).
+      3. Find the bar that CONTAINS follower (preceding bar start).
+      4. Scale offset to follower's bar length.
+      5. snapped = follower_bar_start + scaled_offset.
 
-    Same-track special case: exact position copy → zero double-beats.
+    Same-track: exact position copy.
     """
-    # ── same track: exact position copy ───────────────────────────
-    # Guard: both paths must be non-empty to avoid matching two unloaded decks.
     mfp = master.file_path
     ffp = getattr(follower, 'file_path', '')
     if mfp and ffp and mfp == ffp:
         return float(master.position)
 
-    # ── master: find nearest bar-1 and intra-bar offset ───────────
     beat_len_m = sr * 60.0 / max(master.bpm * master.rate, 1.0)
-
-    if master.beats is not None and len(master.beats) >= 4:
-        m_bar1_pos = nearest_bar_start(master.position, master.beats,
-                                        master.first_beat, beat_len_m)
-        # Resolve m_bar1_pos to a beat index so we can measure bar length
-        raw_i    = int(np.searchsorted(master.beats, m_bar1_pos, side="left"))
-        m_bar1_i = max(0, min(raw_i, len(master.beats) - 1))
-        # Ensure it is truly a bar-boundary index (multiple of 4)
-        m_bar1_i = (m_bar1_i // 4) * 4
-        m_bar1   = float(master.beats[m_bar1_i])
-        m_bar_len = _bar_len_from_beats(master.beats, m_bar1_i, beat_len_m)
-    else:
-        m_bar1    = nearest_bar_start(master.position, None,
-                                       master.first_beat, beat_len_m)
-        m_bar_len = beat_len_m * 4.0
-
-    # Clamp: master.position must be ≥ bar-1 (can be negative before first beat)
-    m_offset = max(0.0, min(float(master.position - m_bar1), m_bar_len))
-
-    # ── follower: find NEAREST bar-1 (not necessarily current bar) ─
     beat_len_f = sr * 60.0 / max(follower.bpm, 1.0)
 
-    if follower.beats is not None and len(follower.beats) >= 4:
-        f_bar1_pos = nearest_bar_start(follower.position, follower.beats,
-                                        follower.first_beat, beat_len_f)
-        raw_i    = int(np.searchsorted(follower.beats, f_bar1_pos, side="left"))
-        f_bar1_i = max(0, min(raw_i, len(follower.beats) - 1))
-        f_bar1_i = (f_bar1_i // 4) * 4
-        f_bar1   = float(follower.beats[f_bar1_i])
-        f_bar_len = _bar_len_from_beats(follower.beats, f_bar1_i, beat_len_f)
-    else:
-        f_bar1    = nearest_bar_start(follower.position, None,
-                                       follower.first_beat, beat_len_f)
-        f_bar_len = beat_len_f * 4.0
+    _, m_bar1, m_bar_len = _preceding_bar_start(
+        master.position, master.beats, master.first_beat, beat_len_m)
+    _, f_bar1, f_bar_len = _preceding_bar_start(
+        follower.position, follower.beats, follower.first_beat, beat_len_f)
 
-    # Scale master's intra-bar offset to follower's bar length
+    m_offset      = float(master.position) - m_bar1          # 0 … m_bar_len
     scaled_offset = m_offset * (f_bar_len / m_bar_len) if m_bar_len > 0 else 0.0
+    snapped       = f_bar1 + scaled_offset
 
-    snapped = f_bar1 + scaled_offset
-    print(f"[Snap] m_bar1={m_bar1/sr:.3f}s m_offset={m_offset/sr:.3f}s "
-          f"f_bar1={f_bar1/sr:.3f}s → snapped={snapped/sr:.3f}s "
-          f"(m_bar={m_bar_len/sr:.3f}s f_bar={f_bar_len/sr:.3f}s)")
+    print(f"[Snap] m_bar={m_bar1/sr:.3f}s off={m_offset/sr:.3f}s "
+          f"f_bar={f_bar1/sr:.3f}s → {snapped/sr:.3f}s "
+          f"phase={m_offset/m_bar_len:.3f}")
     return snapped
 
 

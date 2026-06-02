@@ -29,15 +29,30 @@ Tracks are analysed automatically on first load (BPM, key, beat grid, cues). Ste
 
 ---
 
-## Beat Sync
+## Beat Sync — how it works (Mixxx/rekordbox exact)
 
 **Hardware:** SYNC button
 
-Pressing SYNC on a deck makes it a **follower** — it locks BPM and bar phase to whichever other deck is playing (rekordbox behavior). The playing deck becomes the implicit master.
+Pressing SYNC on a deck makes it **MASTER**. The other deck becomes FOLLOWER and snaps to match.
 
-- Follower rate = exact nominal every audio callback (zero tempo wobble)
-- Phase P-controller silently corrects drift without audible wobble
-- Scratch breaks sync; touch jog re-engages on release
+**Rate lock (every audio callback ~43Hz):**
+```
+follower.rate = master_bpm × master_rate / follower_bpm
+```
+Exact hard lock — zero tempo wobble.
+
+**Bar-phase snap (on SYNC press):**
+1. Find the bar currently playing on master (the bar that CONTAINS master's position)
+2. Compute `m_offset = master.position − bar_start` (how far into the bar)
+3. Find the bar containing follower's current position
+4. Scale offset: `snapped = follower_bar_start + m_offset × (follower_bar_len / master_bar_len)`
+
+Both decks end up at the same fractional position within their respective bars — grids lock visually.
+
+**Phase drift correction (Mixxx exact constants):**
+- `adj = clamp(beat_error × 0.5, ±0.02)` applied as `rate × (1 + adj)` each callback
+- ±2% rate tweak max — completely inaudible, converges in ~1 bar
+- Does NOT nudge position (which caused audible jumps)
 
 **Shift + SYNC** = set loop IN point (see Loops)
 
