@@ -25,17 +25,17 @@ from ..core import event_log
 
 _COL_A   = QColor("#00c8ff")
 _COL_B   = QColor("#ff7a01")
-_BG      = QColor("#08080e")
+_BG      = QColor("#06060c")
 _SEP     = QColor("#1a1a28")
-_CENTRE  = QColor("#2a2a3a")
+_CENTRE  = QColor("#ffffff")   # bright white NOW line
 
 # Visible window — how many beats fit across the full width
-_WINDOW_BEATS = 32
+_WINDOW_BEATS = 16   # tighter window = larger, more readable ticks
 
 
 class BeatGridWidget(QWidget):
 
-    HEIGHT = 64
+    HEIGHT = 96
 
     def __init__(self, engine, parent=None):
         super().__init__(parent)
@@ -87,69 +87,75 @@ class BeatGridWidget(QWidget):
         qp.setPen(QPen(_SEP, 1))
         qp.drawLine(0, mid, W, mid)
 
-        # Centre position marker
+        # Bright NOW line
         qp.setPen(QPen(_CENTRE, 1))
         qp.drawLine(cx, 0, cx, H)
 
-        # "NOW" label
-        qp.setFont(QFont("Courier New", 7))
-        qp.setPen(QPen(QColor("#333340"), 1))
-        qp.drawText(cx - 12, H - 3, "NOW")
-
         decks_meta = [
-            (self._engine.decks[0], _COL_A, 1,       mid - 3),   # top row
-            (self._engine.decks[1], _COL_B, mid + 1,  H   - 3),  # bottom row
+            (self._engine.decks[0], _COL_A, 2,       mid - 2,  "1"),
+            (self._engine.decks[1], _COL_B, mid + 2,  H   - 2, "2"),
         ]
 
-        for deck, col, row_top, row_bot in decks_meta:
+        qp.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+
+        for deck, col, row_top, row_bot, label in decks_meta:
             row_h = row_bot - row_top
+
             if deck.bpm <= 0 or deck.audio is None:
-                # No track: draw a dim centre line
-                qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 25), 1))
+                qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 20), 1))
                 qp.drawLine(0, row_top + row_h // 2, W, row_top + row_h // 2)
+                qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 40), 1))
+                qp.drawText(6, row_top + row_h // 2 + 4, f"{label}: no track")
                 continue
 
             sr         = deck.sample_rate
-            # beat_len uses original file BPM — beats[] is in original sample
-            # space and pos advances at deck.rate samples/output-sample, so
-            # scroll speed = rate/beat_len = rate*bpm/(sr*60). After sync,
-            # rate_A/beat_len_A == rate_B/beat_len_B automatically. Correct.
             beat_len   = sr * 60.0 / max(deck.bpm, 1.0)
             pos        = deck.position
             first_beat = deck.first_beat
+            eff_bpm    = deck.bpm * deck.rate
 
-            # pixels per beat
             px_per_beat = W / _WINDOW_BEATS
             half_w_samp = (W / 2) * beat_len / px_per_beat
-
             vis_lo = pos - half_w_samp
             vis_hi = pos + half_w_samp
 
             if deck.beats is not None and len(deck.beats) >= 2:
-                # Use stored beat array — accurate even for variable-tempo tracks.
-                # The analyzer already rotated the array by downbeat_offset so that
-                # beats[0] is the musical downbeat → i % 4 == 0 marks bar-1.
+                # Find the beat index at the current playhead — use this as the
+                # bar-phase anchor so bar markers are drawn relative to the
+                # musical downbeat, not just beats[0] array index.
+                # downbeat_offset tells us which phase (0-3) beat[0] is on.
+                db_off = getattr(deck, 'downbeat_offset', 0) or 0
                 lo_i = max(0, int(np.searchsorted(deck.beats, vis_lo)) - 1)
                 hi_i = min(len(deck.beats),
                            int(np.searchsorted(deck.beats, vis_hi)) + 2)
                 for i in range(lo_i, hi_i):
                     bp     = deck.beats[i]
                     px     = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    is_bar = (i % 4 == 0)
+                    # Bar-1 when (i + db_off) % 4 == 0 — anchored to musical bar
+                    is_bar = ((i + db_off) % 4 == 0)
                     if 0 <= px < W:
                         _draw_tick(qp, px, row_top, row_h, is_bar, col)
             else:
-                # Arithmetic fallback from BPM + first_beat
+                # Arithmetic fallback — use first_beat as the bar anchor
+                beat_at_pos = int((pos - first_beat) / beat_len) if beat_len > 0 else 0
                 rel_start   = vis_lo - first_beat
                 beat_start  = max(0, int(rel_start / beat_len) - 1)
                 beat_end    = beat_start + _WINDOW_BEATS + 4
                 for i in range(beat_start, beat_end):
-                    bp  = first_beat + i * beat_len
+                    bp = first_beat + i * beat_len
                     if bp > vis_hi:
                         break
-                    px  = int(cx + (bp - pos) / beat_len * px_per_beat)
+                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
                     if 0 <= px < W:
                         _draw_tick(qp, px, row_top, row_h, i % 4 == 0, col)
+
+            # BPM readout (left side)
+            role = "MASTER" if deck.sync_master else ("SYNC" if deck.sync_follower else "")
+            bpm_txt = f"{label}  {eff_bpm:.1f}"
+            if role:
+                bpm_txt += f"  {role}"
+            qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 180), 1))
+            qp.drawText(6, row_top + row_h - 3, bpm_txt)
 
         qp.end()
 
@@ -158,15 +164,15 @@ def _draw_tick(qp: QPainter, px: int, row_top: int, row_h: int,
                is_bar: bool, col: QColor):
     """Draw one beat tick mark."""
     if is_bar:
-        # Bar-start: full row height, bright
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 220), 2))
+        # Bar-start: full height, very bright with glow
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 255), 2))
         qp.drawLine(px, row_top, px, row_top + row_h)
-        # Glow cap at top
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 100), 3))
-        qp.drawLine(px, row_top, px, row_top + 4)
+        # Wide glow
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 60), 5))
+        qp.drawLine(px, row_top, px, row_top + row_h)
     else:
-        # Regular beat: half height, dimmer
-        tick_h = row_h // 2
+        # Regular beat: 2/3 height, clearly visible
+        tick_h = (row_h * 2) // 3
         ty     = row_top + (row_h - tick_h) // 2
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 90), 1))
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 160), 1))
         qp.drawLine(px, ty, px, ty + tick_h)

@@ -467,37 +467,32 @@ class DDJ200:
 
     def _sync_as_follower(self, d: int):
         """
-        rekordbox SYNC behavior: pressing SYNC on deck d makes it a FOLLOWER.
-        The other deck (if playing with BPM) becomes the implicit master.
-        If the other deck is not playing, this deck becomes master.
+        SYNC behavior: pressing SYNC on deck d makes it MASTER.
+        The other deck becomes the follower and snaps to match.
+        If the other deck has no audio/BPM, this deck is just marked master.
         """
         other = self.engine.deck(1 - d)
         this  = self.engine.deck(d)
 
-        if other.playing and other.bpm > 0 and other.audio is not None:
-            # Other deck is already playing — make this deck follow it
-            other.sync_master   = True
-            other.sync_follower = False
-            this.sync_follower  = True
-            this.sync_master    = False
-            self.engine.snap_sync(d)
-            self._synced[d]     = True
-            self._synced[1 - d] = True
-            self._send(CH[d],     NOTE_SYNC, LED_ON)
-            self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
-            print(f"[Sync] deck {d}=FOLLOWER  deck {1-d}=MASTER  "
-                  f"bpm={other.bpm * other.rate:.2f}")
-        elif this.bpm > 0 and this.audio is not None:
-            # Nothing else playing — this deck becomes master
-            this.sync_master    = True
-            this.sync_follower  = False
-            other.sync_follower = True
-            other.sync_master   = False
-            self._synced[d]     = True
-            self._synced[1 - d] = False
-            self._send(CH[d],     NOTE_SYNC, LED_ON)
-            self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
-            print(f"[Sync] deck {d}=MASTER (no other playing)")
+        if this.bpm <= 0 or this.audio is None:
+            print(f"[Sync] deck {d} has no BPM — cannot set as master")
+            return
+
+        # This deck = MASTER, other deck = FOLLOWER
+        this.sync_master    = True
+        this.sync_follower  = False
+        other.sync_follower = True
+        other.sync_master   = False
+
+        # Snap the follower (other deck) to this master
+        self.engine.snap_sync(1 - d)
+
+        self._synced[d]     = True
+        self._synced[1 - d] = True
+        self._send(CH[d],     NOTE_SYNC, LED_ON)
+        self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
+        print(f"[Sync] deck {d}=MASTER  deck {1-d}=FOLLOWER  "
+              f"bpm={this.bpm * this.rate:.2f}")
 
     def _sync_deck(self, d: int):
         """Legacy: keep for backwards compat, delegates to _sync_as_follower."""
