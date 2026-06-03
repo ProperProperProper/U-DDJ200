@@ -203,14 +203,15 @@ class DDJ200:
 
                 if note == NOTE_PLAY and val:
                     deck = self.engine.deck(d)
+                    was_paused = not deck.playing
                     deck.play_pause()
                     self._send(ch, NOTE_PLAY,
                                LED_ON if deck.playing else LED_OFF)
                     if deck.playing and deck.sync_follower:
-                        # Snap this deck directly to master bar phase, then
-                        # _apply_sync will also snap via just_started on next callback
+                        if was_paused:
+                            # Ensure just_started fires in _apply_sync
+                            self.engine._was_playing[d] = False
                         self.engine.snap_sync(d)
-                        print(f"[Play] D{d+1} play+snap  sync_follower=True")
                     return
 
                 if note == NOTE_CUE:
