@@ -75,119 +75,112 @@ class MixerWidget(QWidget):
 
     def _build_ui(self):
         self.setObjectName("MixerWidget")
-        self.setFixedWidth(280)
+        self.setFixedWidth(340)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(4)
 
-        # ── 4 stem rows: DRUM / BASS / OTHER / VOX ───────────
-        # No shift  → stem volume (these knobs)
-        # Shift+EQ  → EQ band (handled in MIDI handler)
-        # Shift+VOX → Color FX (handled in MIDI handler)
-        # HI knob = VOX, MID knob = OTHER, LOW knob = BASS — matches physical EQ layout
-        # Drums are controlled via pads only (same as GRV6 Stem ISO)
-        _STEM_META = [
-            ("VOX",   "#aa44ff", "vocals"),
-            ("OTHER", "#44aaff", "other"),
-            ("BASS",  "#ff9900", "bass"),
+        # ── 8 knobs per deck: stem + EQ side by side, 4 rows ──
+        # Each row = one physical hardware knob:
+        #   normal    → stem volume
+        #   Shift held → EQ band / color FX
+        #
+        # Row 1: VOX  stem | HI  EQ     (HI knob)
+        # Row 2: OTHER stem | MID EQ     (MID knob)
+        # Row 3: BASS  stem | LOW EQ     (LOW knob)
+        # Row 4: DRUMS stem | FX depth   (CFX knob)
+        #
+        _ROWS = [
+            # (stem_label, stem_color, stem_name, eq_label, eq_color, eq_band_or_fx)
+            ("VOX",   "#aa44ff", "vocals", "HI",  "#00c8ff", "high"),
+            ("OTHER", "#44aaff", "other",  "MID", "#44cc88", "mid"),
+            ("BASS",  "#ff9900", "bass",   "LOW", "#ff7733", "low"),
+            ("DRUMS", "#ff4466", "drums",  "FX",  "#bb88ff", "fx"),
         ]
+
         self._stem_knobs = [[], []]
-        for label, color, stem_name in _STEM_META:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.addStretch(1)
-            for ch in range(2):
-                col = QVBoxLayout()
-                col.setSpacing(2)
-                col.setContentsMargins(0, 0, 0, 0)
-                col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-                col.addWidget(_lbl(label, color, 9, True))
-                k = _knob(val=64)    # center = physical knob default = full volume
-                k.valueChanged.connect(
-                    lambda v, c=ch, sn=stem_name:
-                        self.engine and self.engine.deck(c).set_stem_volume(sn, v / 127.0))
-                col.addWidget(k, alignment=Qt.AlignmentFlag.AlignHCenter)
-                row.addLayout(col)
-                self._stem_knobs[ch].append(k)
-                if ch == 0:
-                    row.addStretch(2)
-            row.addStretch(1)
-            root.addLayout(row)
+        self._eq_knobs   = [[], []]   # indices 0..2 = HI/MID/LOW, index 3 = FX depth
+        self._fx_knobs   = []         # same object as _eq_knobs[ch][3] for compat
+        self._fx_combos  = []
 
-        root.addWidget(_sep())
+        # Column header: CH1 left pair | spacer | CH2 right pair
+        hdr = QHBoxLayout()
+        hdr.addStretch(1)
+        hdr.addWidget(_lbl("STEM", "#555", 7))
+        hdr.addWidget(_lbl("EQ", "#555", 7))
+        hdr.addStretch(2)
+        hdr.addWidget(_lbl("STEM", "#555", 7))
+        hdr.addWidget(_lbl("EQ", "#555", 7))
+        hdr.addStretch(1)
+        root.addLayout(hdr)
 
-        # ── EQ rows: HI / MID / LOW ───────────────────────────
-        # Shift+EQ hardware knobs update these. Center = 0 dB, left = kill.
-        _EQ_META = [
-            ("HI",  "#00c8ff", "high"),
-            ("MID", "#44cc88", "mid"),
-            ("LOW", "#ff9900", "low"),
-        ]
-        self._eq_knobs = [[], []]
-        for label, color, band in _EQ_META:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.addStretch(1)
-            for ch in range(2):
-                col = QVBoxLayout()
-                col.setSpacing(2)
-                col.setContentsMargins(0, 0, 0, 0)
-                col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-                col.addWidget(_lbl(label, color, 9, True))
-                k = _knob(val=64)   # center = 0 dB
-                k.valueChanged.connect(
-                    lambda v, c=ch, b=band:
-                        self.mixer.set_eq_raw(c, b, v))
-                col.addWidget(k, alignment=Qt.AlignmentFlag.AlignHCenter)
-                row.addLayout(col)
-                self._eq_knobs[ch].append(k)
-                if ch == 0:
-                    row.addStretch(2)
-            row.addStretch(1)
-            root.addLayout(row)
-
-        root.addWidget(_sep())
-
-        # ── FX row — shift+knob on hardware sends here ────────
-        self._fx_knobs    = []
-        self._fx_combos   = []
-        fx_row = QHBoxLayout()
-        fx_row.setContentsMargins(0, 0, 0, 0)
-        fx_row.addStretch(1)
+        # FX type selectors (one per channel, shown above the FX row)
+        fx_combo_row = QHBoxLayout()
+        fx_combo_row.addStretch(1)
         for ch in range(2):
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            col.setContentsMargins(0, 0, 0, 0)
-            col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-
-            # Effect type selector
             combo = QComboBox()
             combo.addItems(FX_NAMES)
             combo.setCurrentText("FILTER")
-            combo.setFixedWidth(90)
+            combo.setFixedWidth(84)
             combo.setStyleSheet(
                 "QComboBox{background:#0e0e18;color:#bb88ff;border:1px solid #3a2a4a;"
-                "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;}"
+                "border-radius:3px;font-size:8px;font-weight:bold;padding:1px 3px;}"
                 "QComboBox::drop-down{border:none;}"
                 "QComboBox QAbstractItemView{background:#0e0e18;color:#bb88ff;"
-                "selection-background-color:#2a1a3a;font-size:9px;}")
+                "selection-background-color:#2a1a3a;font-size:8px;}")
             combo.currentTextChanged.connect(
                 lambda name, c=ch: self.mixer.set_fx_type(c, name))
-            col.addWidget(combo, alignment=Qt.AlignmentFlag.AlignHCenter)
+            fx_combo_row.addWidget(combo)
             self._fx_combos.append(combo)
-
-            col.addWidget(_lbl("FX", "#bb88ff", 9, True))
-            k = _knob(val=64)   # centre = bypass
-            k.valueChanged.connect(lambda v, c=ch: self.mixer.set_fx_raw(c, v))
-            col.addWidget(k, alignment=Qt.AlignmentFlag.AlignHCenter)
-            col.addWidget(_lbl("← DRY  WET →", "#444", 7))
-            fx_row.addLayout(col)
-            self._fx_knobs.append(k)
             if ch == 0:
-                fx_row.addStretch(2)
-        fx_row.addStretch(1)
-        root.addLayout(fx_row)
+                fx_combo_row.addStretch(2)
+        fx_combo_row.addStretch(1)
+        root.addLayout(fx_combo_row)
+
+        for row_idx, (sl, sc, sn, el, ec, eb) in enumerate(_ROWS):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 2, 0, 2)
+            row.setSpacing(2)
+            row.addStretch(1)
+
+            for ch in range(2):
+                # Stem knob
+                s_col = QVBoxLayout()
+                s_col.setSpacing(1)
+                s_col.setContentsMargins(0, 0, 0, 0)
+                s_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                s_col.addWidget(_lbl(sl, sc, 8, True))
+                sk = _knob(val=64, size=44)
+                sk.valueChanged.connect(
+                    lambda v, c=ch, stem=sn:
+                        self.engine and self.engine.deck(c).set_stem_volume(stem, v / 127.0))
+                s_col.addWidget(sk, alignment=Qt.AlignmentFlag.AlignHCenter)
+                row.addLayout(s_col)
+                self._stem_knobs[ch].append(sk)
+
+                # EQ / FX knob
+                e_col = QVBoxLayout()
+                e_col.setSpacing(1)
+                e_col.setContentsMargins(0, 0, 0, 0)
+                e_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                e_col.addWidget(_lbl(el, ec, 8, True))
+                ek = _knob(val=64, size=44)
+                if eb == "fx":
+                    ek.valueChanged.connect(lambda v, c=ch: self.mixer.set_fx_raw(c, v))
+                    self._fx_knobs.append(ek)
+                else:
+                    ek.valueChanged.connect(
+                        lambda v, c=ch, b=eb: self.mixer.set_eq_raw(c, b, v))
+                e_col.addWidget(ek, alignment=Qt.AlignmentFlag.AlignHCenter)
+                row.addLayout(e_col)
+                self._eq_knobs[ch].append(ek)
+
+                if ch == 0:
+                    row.addStretch(2)
+
+            row.addStretch(1)
+            root.addLayout(row)
 
         root.addWidget(_sep())
 
@@ -311,7 +304,7 @@ class MixerWidget(QWidget):
                         k.setValue(raw)
                         k.blockSignals(False)
 
-        # Sync EQ knobs from mixer state (hardware Shift+EQ may have moved them)
+        # Sync EQ knobs (indices 0-2) and FX knob (index 3) from mixer state
         _EQ_BANDS = ["high", "mid", "low"]
         for ch in range(2):
             eq = self.mixer.eqs[ch]
@@ -323,12 +316,10 @@ class MixerWidget(QWidget):
                     k.blockSignals(True)
                     k.setValue(raw)
                     k.blockSignals(False)
-
-        # Sync FX knobs from mixer state (CFX hardware knob may have moved them)
-        for ch in range(2):
-            depth = self.mixer.fx[ch].depth_value   # 0..1, 0.5 = bypass
+            # FX depth (index 3)
+            depth = self.mixer.fx[ch].depth_value
             raw = int(depth * 127)
-            k = self._fx_knobs[ch]
+            k = self._eq_knobs[ch][3]
             if abs(k.value() - raw) > 1:
                 k.blockSignals(True)
                 k.setValue(raw)
