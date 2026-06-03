@@ -1,20 +1,60 @@
 # U-DJ
 
-**Professional DJ application for macOS — Pioneer DDJ-200 controller, rekordbox-grade feature set modelled on the DDJ-GRV6.**
+**Professional DJ application for macOS — Pioneer DDJ-200 controller, rekordbox-grade feature set.**
 
-Built with Python 3.9, PyQt6, demucs htdemucs_ft, sounddevice, scipy, librosa.
-<img width="1468" height="833" alt="Screenshot 2026-06-02 at 10 41 21 PM" src="https://github.com/user-attachments/assets/731037b5-a337-45db-a332-9e86a8faa33f" />
+Built with Python 3.9 · PyQt6 · demucs htdemucs_ft · sounddevice · librosa
+
+<img width="1468" height="833" alt="U-DJ Screenshot" src="https://github.com/user-attachments/assets/731037b5-a337-45db-a332-9e86a8faa33f" />
 
 ---
 
 ## Quick Start
 
 1. Connect DDJ-200 via USB
-2. Launch `U-DJ.app` from Desktop
-3. Drag tracks from the library onto Deck 1 or Deck 2
-4. Press PLAY
+2. Launch `U-DJ.app` from your Desktop
+3. Click **+ Add Folder** to import your music library
+4. Drag a track onto each deck and press **PLAY**
 
-Tracks are analysed automatically on first load (BPM, key, beat grid, cues). Stems are pre-generated in the background for every track in the library at startup — the green dot in the library means stems are ready.
+Tracks are analysed automatically on first import — BPM, key, beat grid, energy, cue points. Stems are loaded on demand when a track is put on a deck (cached after first run, instant thereafter).
+
+---
+
+## Beat Sync
+
+**How to use:**
+- Press **SYNC** on the deck you want as **MASTER** → that deck becomes master, the other snaps to match
+- Press **SYNC again on the master** → re-snaps the slave to the current bar phase
+- Press **SYNC on the slave** while both are playing → slave promotes itself to master
+
+**What happens under the hood:**
+
+1. **Rate lock** — follower rate is set to `master_eff_bpm / follower_bpm` every audio callback (~43 Hz). Zero tempo wobble.
+2. **Bar-phase snap** — on sync assignment or play-start, follower position jumps to the same fractional bar phase as master (uniform BPM arithmetic, consistent with phase measurement).
+3. **Phase nudge** — continuous position correction (±3% of a beat per callback max) keeps tracks locked despite minor BPM detection error. Auto re-snap fires if drift exceeds 0.4 beats.
+
+---
+
+## Stems
+
+Stem separation uses **demucs htdemucs_ft** (fine-tuned transformer, Serato-grade quality). Stems are separated on demand when a track loads to a deck — the `⏳ STEMS` badge shows on the deck while processing (~90 sec on Apple Silicon MPS), then disappears when ready.
+
+**Pre-compute stems for your whole library** (faster playback):
+```bash
+cd ~/Desktop/U-DJ
+python3 stem_example.py /path/to/your/music/folder
+```
+Stems are cached to `~/udj_cache/<track_hash>/` as WAV files and load instantly next time.
+
+### Stem Knob Mapping (DDJ-200)
+
+| Knob | Stem | Shift held |
+|------|------|------------|
+| HI | Vocals | EQ High |
+| MID | Other / Melody | EQ Mid |
+| LOW | Bass | EQ Low |
+| CFX Super Knob | **Drums** | Color FX depth |
+
+Center = full volume. Turn left = fade to kill. Right = full (no boost). All four stems to zero = silence.
 
 ---
 
@@ -22,202 +62,102 @@ Tracks are analysed automatically on first load (BPM, key, beat grid, cues). Ste
 
 | Dot | Colour | Meaning |
 |-----|--------|---------|
-| ● | Green | Fully analysed — BPM, key, beats, cues, **stems ready** |
-| ● | Blue | BPM/key done — stems still processing |
+| ● | Green | Fully analysed — BPM, key, beats, cues, stems ready |
+| ● | Blue | BPM/key done — stems loading on deck |
 | ● | Amber | Beats done — missing some metadata |
 | ● | Orange | BPM only |
 | ○ | Grey | Not yet analysed |
 
 ---
 
-## Beat Sync — how it works (Mixxx/rekordbox exact)
+## Track Analysis Pipeline
 
-**Hardware:** SYNC button
+Run automatically on first import. Per track:
 
-Pressing SYNC on a deck makes it **MASTER**. The other deck becomes FOLLOWER and snaps to match.
-
-**Rate lock (every audio callback ~43Hz):**
-```
-follower.rate = master_bpm × master_rate / follower_bpm
-```
-Exact hard lock — zero tempo wobble.
-
-**Bar-phase snap (on SYNC press):**
-1. Find the bar currently playing on master (the bar that CONTAINS master's position)
-2. Compute `m_offset = master.position − bar_start` (how far into the bar)
-3. Find the bar containing follower's current position
-4. Scale offset: `snapped = follower_bar_start + m_offset × (follower_bar_len / master_bar_len)`
-
-Both decks end up at the same fractional position within their respective bars — grids lock visually.
-
-**Phase drift correction (Mixxx exact constants):**
-- `adj = clamp(beat_error × 0.5, ±0.02)` applied as `rate × (1 + adj)` each callback
-- ±2% rate tweak max — completely inaudible, converges in ~1 bar
-- Does NOT nudge position (which caused audible jumps)
-
-**Shift + SYNC** = set loop IN point (see Loops)
-
----
-
-## Quantize
-
-Always on. All hot cue jumps, beat loops, and beat jumps snap to the nearest beat grid position. Beat grid is stored from BPM analysis — same algorithm as Mixxx AnalyzerBeats.
+| Step | Detail |
+|------|--------|
+| BPM | Spectral-flux onset + autocorrelation (Mixxx algorithm), half/double-tempo correction |
+| Beat grid | Every beat position stored; locked to best BPM candidate |
+| Phrase detection | 8-bar boundary detection (djay-style) |
+| Key | Krumhansl-Schmuckler profiles → Camelot wheel code |
+| Loudness | EBU R128 BS.1770-4 integrated LUFS + normalisation gain |
+| Energy | 1–10 score (MIK-style: loudness + brightness + compression) |
+| Auto cue points | Up to 8 INTRO / DROP / BUILD / BREAK / OUTRO markers per track |
 
 ---
 
 ## Hot Cues
 
-**Pad mode:** HOT CUE (press HOT CUE mode button or Shift+cycle)
+**Pad mode: HOT CUE**
 
 | Action | Result |
 |--------|--------|
 | Pad press (empty) | Set cue at current position (quantized to beat) |
 | Pad press (set) | Jump to cue and play |
 | Shift + pad | Delete cue |
-| Right-click pad (UI) | Delete cue |
 
-Auto-detected cue points (INTRO / DROP / BUILD / BREAK / OUTRO) are loaded onto pads automatically from MIK-style energy analysis.
+Auto-detected cue points load onto pads automatically.
 
 ---
 
 ## Beat Loop
 
-**Pad mode:** BEAT LOOP
+**Pad mode: BEAT LOOP**
 
-8 pads = loop sizes: 1/4 · 1/2 · 1 · 2 · 4 · 8 · 16 · 32 bars
+8 pads = `¼ · ½ · 1 · 2 · 4 · 8 · 16 · 32` bars
 
 | Action | Result |
 |--------|--------|
-| Pad press | Activate loop of that size from current position |
-| Pad press (active) | Exit loop |
-| Shift + lower 4 pads (loop active) | Halve loop length |
-| Shift + upper 4 pads (loop active) | Double loop length |
+| Pad press | Activate loop from current position |
+| Pad press (active loop) | Exit loop |
+| Shift + lower 4 (loop active) | Halve loop |
+| Shift + upper 4 (loop active) | Double loop |
 
-Loop start snaps to nearest phrase boundary (djay-style smart quantize), falling back to nearest bar, then nearest beat.
+Loop start snaps to nearest phrase boundary, falling back to bar then beat.
 
-**Manual loop:**
-- Shift + SYNC = Loop IN (snaps to nearest phrase/bar)
-- SYNC (second press) = Loop OUT (snaps to nearest bar)
-
----
-
-## Stems / Stem ISO
-
-**Pad mode:** STEMS
-
-Stems are generated using **demucs htdemucs_ft** (fine-tuned model, Serato-grade quality) with `shifts=4, overlap=0.5` for maximum separation quality. All stems are pre-generated during library analysis and stored on disk — instant load during performance.
-
-**EQ knobs (no Shift) = Stem ISO:**
-
-| Knob | Stem |
-|------|------|
-| HI | Vocals |
-| MID | Other / Melody |
-| LOW | Bass |
-
-Center = full volume. Turn left = fade to kill. Right of center = full (no boost). Same behavior as GRV6 Stem ISO.
-
-**Pads 1–4:** Toggle stem on/off (drums / bass / other / vocals)
-
-**Pads 5–8:** Hold to **solo** that stem (all others muted while held, restore on release)
-
-**Shift + EQ knobs** = actual EQ (3-band LR8 Linkwitz-Riley, ±10 dB, true kill at full left)
-
-**CFX knob** = Color FX depth (always, independent of shift)
+**Manual loop:** Shift+SYNC = Loop IN · SYNC (2nd press) = Loop OUT
 
 ---
 
 ## Beat Jump
 
-**Pad mode:** BEAT JUMP
+**Pad mode: BEAT JUMP**
 
-| Pad | Jump |
-|-----|------|
-| 1 | −1 bar |
-| 2 | −2 bars |
-| 3 | −4 bars |
-| 4 | −8 bars |
-| 5 | +1 bar |
-| 6 | +2 bars |
-| 7 | +4 bars |
-| 8 | +8 bars |
+| Pads 1–4 | Pads 5–8 |
+|----------|----------|
+| −1 / −2 / −4 / −8 bars | +1 / +2 / +4 / +8 bars |
 
 ---
 
 ## Pad FX (Gate FX)
 
-**Pad mode:** PAD FX
-
-Hold a pad to apply an FX momentarily. Release = bypass. Matches GRV6 Beat FX palette.
+**Pad mode: PAD FX** — hold a pad to apply, release to bypass
 
 | Pad | Effect |
 |-----|--------|
 | 1 | Filter HPF sweep |
 | 2 | Filter LPF sweep |
-| 3 | Echo (beat-synced) |
-| 4 | Roll (beat-synced loop) |
+| 3 | Echo (BPM-synced) |
+| 4 | Roll (BPM-synced loop) |
 | 5 | Reverb |
 | 6 | Flanger |
 | 7 | Phaser |
-| 8 | Echo Out (heavy feedback) |
-
-Echo and Roll are BPM-synced — delay/loop size tracks the playing track's BPM in real time.
-
----
-
-## Pad Mode Cycling (Hardware)
-
-**Shift + first beat-loop pad** = cycle pad mode:
-
-`HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX → HOT CUE`
-
----
-
-## Key Shift
-
-**UI:** ▲ / ▼ buttons next to the key display on each deck. Press **0** to reset.
-
-**Hardware:** Shift + jog rim (outer ring, not touch surface) — 5 ticks per semitone.
-
-Range: ±12 semitones. Applied as playback rate adjustment — sync engine compensates tempo, so only pitch changes. Key display turns amber when shifted.
-
----
-
-## Key Sync
-
-**Hardware:** Shift + PFL
-
-Calculates the semitone difference between this deck's key and the master deck's key using the Camelot wheel, then applies it as a key shift. Aligns keys harmonically (selects the smallest shift ≤ 6 semitones).
-
-Requires both decks to have Camelot data (blue dot or green dot in library).
-
----
-
-## Cue Behavior (CDJ/rekordbox style)
-
-| State | Press CUE | Release CUE |
-|-------|-----------|-------------|
-| Stopped, no cue set | Set cue at position | — |
-| Stopped, cue set | **Stutter:** play from cue while held | Stop and return to cue |
-| Playing | Return to cue and stop | — |
-| Shift + CUE | Go to cue and stop immediately | — |
+| 8 | Echo Out |
 
 ---
 
 ## Color FX
 
-**CFX knob** = FX wet/dry depth. Center = bypass. Select FX type from the dropdown in the mixer panel.
-
-Available effects:
+**CFX Super Knob (Shift held)** = Color FX wet/dry depth
 
 | Effect | Description |
 |--------|-------------|
 | FILTER | Resonant 4-pole Moog-style (LPF right, HPF left) |
 | ECHO | Beat-synced echo with filtered feedback |
 | ROLL | Beat-synced loop/stutter |
-| DELAY | Stereo ping-pong delay with warm feedback |
+| DELAY | Stereo ping-pong delay |
 | REVERB | Freeverb plate reverb |
-| FLANGER | Tape-style flanger with feedback |
+| FLANGER | Tape-style flanger |
 | PHASER | 8-stage allpass phaser |
 | DRIVE | Tube/tape saturation |
 
@@ -225,155 +165,120 @@ Available effects:
 
 ## EQ
 
-**Shift + HI / MID / LOW knobs**
-
-3-band LR8 Linkwitz-Riley crossover (−48 dB/octave isolation). Pioneer DJM-900-style taper: −∞ at full left (true kill), +10 dB at full right. Soft-pickup prevents jumps when entering Shift mode.
+**Shift + HI / MID / LOW** — 3-band Linkwitz-Riley (−48 dB/oct). Full left = kill. Full right = +10 dB. Soft-pickup prevents jumps when engaging Shift.
 
 ---
 
-## VU Meters & Crossfader
+## Key Shift & Key Sync
 
-- CH1 and CH2 compact VU meters — post-fader peak
-- Master stereo VU with dBFS scale
-- Crossfader — constant-power (cosine law)
-- PFL buttons per channel
+- **UI buttons ▲/▼** or **Shift + jog rim** (5 ticks per semitone) — range ±12 semitones
+- **0 button** = reset to original key
+- **Shift + PFL** = Key Sync — auto-calculates semitone offset to match master key (Camelot wheel, smallest shift ≤6 semitones)
+
+---
+
+## Jog Wheel
+
+| Action | Result |
+|--------|--------|
+| Touch surface | Scratch |
+| Rim (not touching) | Pitch bend |
+| Shift + rim | Key shift |
+
+---
+
+## Cue Behavior (CDJ/rekordbox style)
+
+| State | CUE press | CUE release |
+|-------|-----------|-------------|
+| Stopped, no cue | Set cue | — |
+| Stopped, cue set | Stutter play from cue | Return to cue + stop |
+| Playing | Return to cue + stop | — |
+| Shift + CUE | Go to cue + stop | — |
 
 ---
 
 ## Loudness Normalisation
 
-**NORM button** (appears on deck when track has LUFS data)
-
-Applies EBU R128 gain offset to match tracks to a target LUFS. Off by default — user enables per-deck. Displayed as `NORM +X.X dB`.
+**NORM button** on the deck panel. Applies EBU R128 gain offset so tracks match a target LUFS. Per-deck toggle.
 
 ---
 
-## Analyse All Button
+## Analyse All
 
-The **⟳ Analyse All** button in the library toolbar queues every track for full BPM + stems re-analysis.
-
-| State | Appearance |
-|-------|-----------|
-| Idle | Grey — "⟳ Analyse All" |
-| Running | Green highlight — "⟳ 3 / 24" (live count) |
-| Done | Resets to idle |
-
-While running, a **progress bar** (`X / N`) and a **CPU % badge** appear next to the button:
-- Green = CPU < 50%
-- Amber = CPU 50–80%
-- Red = CPU > 80%
-
-Both disappear when analysis completes.
+The **⟳ Analyse All** button re-runs BPM + stems analysis on every track in the library. Live progress counter and CPU % badge shown during analysis.
 
 ---
 
-## Track Analysis (pre-analysis before performance)
+## DDJ-200 Full Control Map
 
-All analysis runs before you perform:
+### Deck Controls
 
-1. **On app startup** — all library tracks are queued for BPM/key/beats/cues analysis + stems pre-generation
-2. **On +Add Folder** — same pipeline runs immediately after scan
-3. **On track load** — if not yet analysed, analysis runs in background and patches the live deck (no interruption)
-
-Analysis pipeline per track:
-- BPM (spectral-flux onset + Mixxx autocorrelation algorithm)
-- Beat grid (all beat positions stored)
-- Phrase detection (8-bar boundaries)
-- Key (Krumhansl-Schmuckler) + Camelot wheel
-- Loudness (EBU R128 BS.1770-4 LUFS)
-- Energy (1–10 MIK style)
-- Auto cue points (INTRO / DROP / BUILD / BREAK / OUTRO)
-- **Stems** (demucs htdemucs_ft, shifts=4, overlap=0.5)
-
-Stems are cached to `~/.udj/stems/` as compressed `.npz` files. Second load of any track is instant.
-
----
-
-## DDJ-200 Hardware Map
-
-### Deck buttons
-
-| Button | Normal | Shift |
-|--------|--------|-------|
-| PLAY | Play/pause | — |
-| CUE | CDJ cue stutter (hold to play from cue) | Go to cue + stop |
-| SYNC | Make this deck a follower | Loop IN |
-| SYNC (2nd press, loop armed) | Loop OUT | — |
+| Control | Normal | Shift |
+|---------|--------|-------|
+| PLAY | Play / pause | — |
+| CUE | CDJ stutter cue | Go to cue + stop |
+| SYNC | Make this deck MASTER (re-snap if already master) | Loop IN |
+| SYNC 2nd press | Loop OUT (when loop armed) | — |
 | PFL | Headphone cue | Key Sync to master |
 
-### Jog wheel
+### Knobs
 
-| Action | Result |
-|--------|--------|
-| Touch surface | Scratch |
-| Rim (no touch) | Pitch bend |
-| Rim + Shift | Key shift (±1 semitone per 5 ticks) |
+| Knob | Normal | Shift |
+|------|--------|-------|
+| HI | Vocals stem | EQ High |
+| MID | Other / melody stem | EQ Mid |
+| LOW | Bass stem | EQ Low |
+| CFX Super Knob | Drums stem | Color FX depth |
 
-### EQ knobs (no Shift) — Stem ISO
+### Performance Pads — Mode Cycling
 
-| Knob | Stem |
-|------|------|
-| HI | Vocals |
-| MID | Other / Melody |
-| LOW | Bass |
-| CFX | Color FX depth (always) |
+**Shift + first beat-loop pad** → cycles: `HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX`
 
-### EQ knobs (Shift held) — actual EQ
+| Mode | Pads 1–4 | Pads 5–8 |
+|------|----------|----------|
+| HOT CUE | Trigger / set cues 1–4 | Trigger / set cues 5–8 |
+| BEAT LOOP | ¼ · ½ · 1 · 2 bars | 4 · 8 · 16 · 32 bars |
+| STEMS | Toggle stem on/off | Hold to solo stem |
+| BEAT JUMP | −1/−2/−4/−8 bars | +1/+2/+4/+8 bars |
+| PAD FX | Hold = gate FX | Hold = gate FX |
 
-| Knob | Band |
-|------|------|
-| Shift + HI | High |
-| Shift + MID | Mid |
-| Shift + LOW | Low |
+---
 
-### Performance pads — mode cycling
+## File Locations
 
-**Shift + first beat-loop pad** = cycle mode: `HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX`
-
-| Mode | Pads 1–8 |
+| Path | Contents |
 |------|----------|
-| HOT CUE | Trigger/set hot cues 1–8 |
-| BEAT LOOP | Loop sizes 1/4 · 1/2 · 1 · 2 · 4 · 8 · 16 · 32 |
-| STEMS | 1–4 = toggle stem · 5–8 = hold to solo |
-| BEAT JUMP | −1/−2/−4/−8 bars · +1/+2/+4/+8 bars |
-| PAD FX | Hold = gate FX (Filter↓/↑, Echo, Roll, Reverb, Flange, Phase, Echo Out) |
+| `~/.udj/library.db` | Track database (BPM, key, beats, cues) |
+| `~/.udj/events.db` | Sync / quantize / grid event log |
+| `~/udj_cache/<hash>/` | Pre-computed WAV stems (vocals, drums, bass, other) |
 
 ---
 
-## GRV6/rekordbox Features Not Yet Implemented
-
-| Feature | Notes |
-|---------|-------|
-| **Groove Circuit** | Live drum loop injection/replacement — rekordbox proprietary, requires drum loop library + real-time drum stem swap |
-| **Smart Rotary Selector** | DDJ-200 has no joystick — hardware limitation |
-| **4-deck operation** | DDJ-200 is 2-deck hardware |
-| **Keyboard pad mode** | Chromatic pitch play across pads — needs per-pad pitch shift DSP |
-| **DISCOVER** | AI next-track recommendation — needs ML model or cloud API |
-| **Beat FX BPM fraction** | Dedicated BPM division selector per effect — hardware button not available |
-| **Sound Color FX (9 types)** | GRV6 has 9; U-DJ has 8 (missing Noise, Dub Echo, Jet) |
-| **Mobile / iOS** | GRV6 supports rekordbox iOS — N/A |
-
----
-
-## Build
+## Build from Source
 
 ```bash
 cd ~/Desktop/U-DJ
+pip install -r requirements.txt
 python3 -m PyInstaller udj.spec --clean -y
 rm -rf ~/Desktop/U-DJ.app
 cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
 ```
 
-## Install dependencies
-
+**Stem pre-computation** (optional, for whole library):
 ```bash
-pip install PyQt6 sounddevice soundfile scipy librosa pyloudnorm \
-            python-rtmidi demucs torch torchaudio mutagen
+pip install -r requirements_stem_analyzer.txt
+python3 stem_example.py /path/to/music/folder
 ```
 
-## File locations
+---
 
-| Path | Contents |
-|------|----------|
-| `~/.udj/library.db` | SQLite track database |
-| `~/.udj/stems/` | Pre-computed stem cache (`.npz` files) |
+## Not Yet Implemented
+
+| Feature | Notes |
+|---------|-------|
+| Groove Circuit | Live drum loop injection — rekordbox proprietary |
+| Smart Rotary Selector | DDJ-200 has no joystick — hardware limitation |
+| 4-deck | DDJ-200 is 2-deck only |
+| DISCOVER | AI track recommendation |
+| rekordbox iOS | N/A |
