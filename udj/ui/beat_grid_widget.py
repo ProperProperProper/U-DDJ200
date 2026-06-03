@@ -114,9 +114,12 @@ class BeatGridWidget(QWidget):
             sr          = deck.sample_rate
             pos         = deck.position
             first_beat  = deck.first_beat
-            # Show native BPM when paused, effective BPM when playing
-            eff_bpm     = deck.bpm * deck.rate if deck.playing else deck.bpm
-            beat_len    = sr * 60.0 / max(eff_bpm, 1.0)
+            # Use native BPM (no rate) for beat_len — matches sync engine phase model.
+            # Rate-adjusted BPM caused bar markers to misalign between decks.
+            # Scrolling speed is still correct: position advances at deck.rate,
+            # and native beat_len × rate = effective beat_len exactly.
+            beat_len    = sr * 60.0 / max(deck.bpm, 1.0)
+            eff_bpm     = deck.bpm * deck.rate  # for label only
 
             px_per_beat = W / _WINDOW_BEATS
             half_w_samp = (W / 2) * beat_len / px_per_beat
