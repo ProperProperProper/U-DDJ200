@@ -136,7 +136,7 @@ Available: FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRI
 
 ## EQ
 
-**Shift + HI / MID / LOW knobs** — 3-band EQ. Full left = kill. Full right = +10 dB. Soft-pickup prevents jumps.
+**Hold Shift + turn HI / MID / LOW** — 3-band EQ. Takes effect immediately from wherever the knob is. Full left = kill. Full right = +10 dB.
 
 ---
 

@@ -195,8 +195,8 @@ class DDJ200:
                     was_shift = self._shift[d]
                     self._shift[d] = bool(val)
                     if val and not was_shift:
-                        # Shift engaged — re-arm EQ pickup so knobs don't jump
-                        self._eq_pickup_armed[d] = [True, True, True]
+                        # Shift engaged — EQ applies immediately from current knob position
+                        self._eq_pickup_armed[d] = [False, False, False]
                     if not val and was_shift:
                         pass  # FX state is now persistent — CFX knob controls it
                     return
