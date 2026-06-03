@@ -63,6 +63,7 @@ class MixerWidget(QWidget):
         self._deck_peak_fns  = deck_peak_fns or []
 
         self._stem_knobs: list = [[], []]   # [ch][stem_idx] → QDial
+        self._eq_knobs:   list = [[], []]   # [ch][band_idx 0=hi,1=mid,2=lo] → QDial
         self._fx_knobs:   list = []         # [ch] → QDial (shift+knob = CFX)
         self._pfl_btns:   list = []
 
@@ -109,6 +110,38 @@ class MixerWidget(QWidget):
                 col.addWidget(k, alignment=Qt.AlignmentFlag.AlignHCenter)
                 row.addLayout(col)
                 self._stem_knobs[ch].append(k)
+                if ch == 0:
+                    row.addStretch(2)
+            row.addStretch(1)
+            root.addLayout(row)
+
+        root.addWidget(_sep())
+
+        # ── EQ rows: HI / MID / LOW ───────────────────────────
+        # Shift+EQ hardware knobs update these. Center = 0 dB, left = kill.
+        _EQ_META = [
+            ("HI",  "#00c8ff", "high"),
+            ("MID", "#44cc88", "mid"),
+            ("LOW", "#ff9900", "low"),
+        ]
+        self._eq_knobs = [[], []]
+        for label, color, band in _EQ_META:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addStretch(1)
+            for ch in range(2):
+                col = QVBoxLayout()
+                col.setSpacing(2)
+                col.setContentsMargins(0, 0, 0, 0)
+                col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                col.addWidget(_lbl(label, color, 9, True))
+                k = _knob(val=64)   # center = 0 dB
+                k.valueChanged.connect(
+                    lambda v, c=ch, b=band:
+                        self.mixer.set_eq_raw(c, b, v))
+                col.addWidget(k, alignment=Qt.AlignmentFlag.AlignHCenter)
+                row.addLayout(col)
+                self._eq_knobs[ch].append(k)
                 if ch == 0:
                     row.addStretch(2)
             row.addStretch(1)
@@ -262,7 +295,46 @@ class MixerWidget(QWidget):
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
 
-        # Channel VUs — post-fader (responds to volume + crossfader)
+        # Sync stem knobs from deck state (hardware may have moved them)
+        if self.engine:
+            _STEM_BANDS = ["vocals", "other", "bass"]
+            for ch in range(2):
+                deck = self.engine.deck(ch)
+                for i, stem in enumerate(_STEM_BANDS):
+                    vol = deck.stem_volumes.get(stem, 1.0)
+                    # Inverse of sqrt taper: raw = vol² × 0.5 × 127
+                    # vol≥1 → show center (64) — hardware knob at ≥center gives unity
+                    raw = 64 if vol >= 1.0 else int(vol ** 2 * 63.5)
+                    k = self._stem_knobs[ch][i]
+                    if abs(k.value() - raw) > 1:
+                        k.blockSignals(True)
+                        k.setValue(raw)
+                        k.blockSignals(False)
+
+        # Sync EQ knobs from mixer state (hardware Shift+EQ may have moved them)
+        _EQ_BANDS = ["high", "mid", "low"]
+        for ch in range(2):
+            eq = self.mixer.eqs[ch]
+            for i, band in enumerate(_EQ_BANDS):
+                v = getattr(eq, band, 0.0)   # −1.0 … +1.0
+                raw = int((v + 1.0) / 2.0 * 127)
+                k = self._eq_knobs[ch][i]
+                if abs(k.value() - raw) > 1:
+                    k.blockSignals(True)
+                    k.setValue(raw)
+                    k.blockSignals(False)
+
+        # Sync FX knobs from mixer state (CFX hardware knob may have moved them)
+        for ch in range(2):
+            depth = self.mixer.fx[ch].depth_value   # 0..1, 0.5 = bypass
+            raw = int(depth * 127)
+            k = self._fx_knobs[ch]
+            if abs(k.value() - raw) > 1:
+                k.blockSignals(True)
+                k.setValue(raw)
+                k.blockSignals(False)
+
+        # Channel VUs
         self._vu_ch1.push(self.mixer.ch_peak[0])
         self._vu_ch2.push(self.mixer.ch_peak[1])
 
