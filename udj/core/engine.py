@@ -1,27 +1,21 @@
 """
-AudioEngine — Mixxx-exact sync engine.
+AudioEngine — beat sync engine.
 
-Sync algorithm mirrors Mixxx's SyncControl / EngineSync exactly:
+Every audio callback (≈ 43 Hz at 44100 / 1024):
+  1. Hard rate lock: follower.rate = master_eff_bpm / follower_bpm
+  2. Phase nudge: position += clip(error × gain, ±cap) × beat_len
+     — inaudible correction, converges in < 1 bar
 
-  Every audio callback (≈ 43 Hz at 44100 / 1024):
-    1. nominal   = master_bpm / follower_file_bpm
-    2. bd_error  = master_beat_distance − follower_beat_distance
-                   (wrapped to −0.5 … +0.5)
-    3. adj       = clamp(bd_error × kSyncAdjustmentMultiplier,
-                         ±kSyncAdjustmentCap)
-    4. rate      = nominal × (1 + adj)
+Phase model (uniform BPM arithmetic — no stored beat grid):
+  beat_distance = (position − first_beat) % beat_len / beat_len
+  bar_distance  = (position − first_beat) % bar_len  / bar_len
+  This matches the beat grid widget renderer exactly, so the visual
+  grid alignment truthfully reflects sync state.
 
-  Mixxx source constants (synccontrol.cpp):
-    kSyncAdjustmentMultiplier = 0.5
-    kSyncAdjustmentCap        = 0.02   (2 %)
-
-  beat_distance() uses the stored beat-array (Mixxx: Beats::getBeatDistance).
-  Falls back to first_beat + BPM arithmetic when no array is loaded yet.
-
-  On play-start or explicit SYNC press:
-    - Snap follower position by bd_error × beat_len (Mixxx: requestSync)
-    - This aligns the nearest beat, not necessarily bar-1.
-    - Bar-1 alignment is done separately by snap_sync().
+Snaps fire on:
+  - play-start (just_started)
+  - explicit snap_sync() call (SYNC button, master switch)
+  Both use _snap_to_grid() which also uses uniform arithmetic.
 """
 from __future__ import annotations
 

@@ -60,19 +60,13 @@ class BeatGridWidget(QWidget):
         for d_idx, deck in enumerate(self._engine.decks):
             if deck.bpm <= 0 or deck.audio is None or not deck.playing:
                 continue
-            sr       = deck.sample_rate
-            pos      = deck.position
-            beat_len = sr * 60.0 / max(deck.bpm, 1.0)
-            if deck.beats is not None and len(deck.beats) >= 2:
-                beat_idx = max(0, int(np.searchsorted(deck.beats, pos, side="right")) - 1)
-                bar_idx  = beat_idx // 4
-                lo = deck.beats[beat_idx]
-                hi = deck.beats[min(beat_idx + 1, len(deck.beats) - 1)]
-                beat_phase = float((pos - lo) / (hi - lo)) if hi > lo else 0.0
-            else:
-                beat_idx   = int((pos - deck.first_beat) / beat_len) if beat_len > 0 else 0
-                bar_idx    = beat_idx // 4
-                beat_phase = ((pos - deck.first_beat) % beat_len) / beat_len if beat_len > 0 else 0.0
+            sr         = deck.sample_rate
+            pos        = deck.position
+            beat_len   = sr * 60.0 / max(deck.bpm, 1.0)
+            rel        = pos - deck.first_beat
+            beat_idx   = int(rel / beat_len) if beat_len > 0 else 0
+            bar_idx    = beat_idx // 4
+            beat_phase = (rel % beat_len) / beat_len if beat_len > 0 else 0.0
             event_log.log_grid(d_idx, beat_idx, bar_idx, beat_phase,
                                pos / sr, deck.bpm * deck.rate)
 
