@@ -149,7 +149,6 @@ class AudioEngine:
         self.auto_sync         = False
         self._was_playing      = [False] * NUM_DECKS
         self._last_master_rate = [None, None]   # per-follower: detect master rate jump
-        self._last_master_id   = [None, None]   # per-follower: detect master reassignment
         self._sync_log_tick    = 0               # throttle sync logging to ~1 Hz
 
     # ── stream ────────────────────────────────────────────────
@@ -239,33 +238,27 @@ class AudioEngine:
                 self._was_playing[f_idx] = follower.playing
                 continue
 
-            just_started    = follower.playing and not self._was_playing[f_idx]
-            master_changed  = id(master) != self._last_master_id[f_idx]
-            if just_started:
-                print(f"[SYNC] D{f_idx+1} play-start  bpm={follower.bpm:.2f}  master_bar_phase={m_bar_phase:.3f}")
-            if master_changed and follower.playing:
-                print(f"[SYNC] D{f_idx+1} master reassigned — snapping immediately")
-            self._was_playing[f_idx]   = follower.playing
-            self._last_master_id[f_idx] = id(master)
+            just_started = follower.playing and not self._was_playing[f_idx]
+            self._was_playing[f_idx] = follower.playing
 
             if not follower.playing:
                 continue
 
-            # ALWAYS set exact nominal — this is the hard lock.
+            # ALWAYS set exact nominal — hard tempo lock.
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
             nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
             follower.rate = max(0.5, min(2.0, nominal))
 
-            # Detect master rate change
+            # Detect master rate change (tempo slider moved)
             prev = self._last_master_rate[f_idx]
             rate_jumped = (prev is not None and abs(master.rate - prev) > _SNAP_RATE_THR)
             self._last_master_rate[f_idx] = master.rate
 
-            if just_started or rate_jumped or master_changed:
-                reason = ("play-start" if just_started
-                          else "master-assigned" if master_changed
-                          else f"rate-jump({prev:.4f}→{master.rate:.4f})")
-                print(f"[SNAP] D{f_idx+1} bar-snap  reason={reason}  master_bar_phase={m_bar_phase:.3f}")
+            # One-shot snap on play-start or tempo change only.
+            # Master-switch snaps are handled explicitly by snap_sync().
+            if just_started or rate_jumped:
+                reason = "play-start" if just_started else f"rate-jump({prev:.4f}→{master.rate:.4f})"
+                print(f"[SNAP] D{f_idx+1} {reason}  bar_phase={m_bar_phase:.3f}")
                 self._do_snap(master, follower, master_bar, m_bar_phase)
                 continue
 
@@ -285,18 +278,12 @@ class AudioEngine:
             # Rate tweak fights itself because rate is reset to nominal each callback.
             # Position nudge is immediate, inaudible (<1ms), and converges in <1 bar.
             nudge_samples = 0.0
-            if not follower._scratch_active:
-                if abs(error) > 0.4:
-                    # Error too large for nudge to catch up — hard re-snap
-                    print(f"[SYNC] D{f_idx+1} drift={error:+.3f}beats — auto re-snap")
-                    self._do_snap(master, follower, master_bar, m_bar_phase)
-                elif abs(error) > _PHASE_DEAD:
-                    # Proportional nudge toward master phase
-                    nudge_beats = float(np.clip(error * _NUDGE_GAIN, -_PHASE_NUDGE_CAP, _PHASE_NUDGE_CAP))
-                    nudge_samples = nudge_beats * master_beat
-                    audio_len = len(follower.audio) if follower.audio is not None else 0
-                    follower.position = float(np.clip(
-                        follower.position + nudge_samples, 0.0, max(0, audio_len - 2)))
+            if not follower._scratch_active and abs(error) > _PHASE_DEAD:
+                nudge_beats = float(np.clip(error * _NUDGE_GAIN, -_PHASE_NUDGE_CAP, _PHASE_NUDGE_CAP))
+                nudge_samples = nudge_beats * master_beat
+                audio_len = len(follower.audio) if follower.audio is not None else 0
+                follower.position = float(np.clip(
+                    follower.position + nudge_samples, 0.0, max(0, audio_len - 2)))
 
             # Log sync state ~1 Hz (every ~43 callbacks)
             self._sync_log_tick += 1
@@ -395,7 +382,6 @@ class AudioEngine:
               f"bar_phase={m_bar:.3f}  master_playing={master.playing}")
 
         # Force _apply_sync to re-snap on next callback too
-        self._last_master_id[follower_idx] = None
         if not follower.playing:
             self._was_playing[follower_idx] = False
 

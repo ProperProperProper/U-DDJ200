@@ -203,8 +203,6 @@ class DDJ200:
 
                 if note == NOTE_PLAY and val:
                     deck = self.engine.deck(d)
-                    # Force just_started to fire in _apply_sync on the very next callback
-                    self.engine._was_playing[d] = False
                     deck.play_pause()
                     self._send(ch, NOTE_PLAY,
                                LED_ON if deck.playing else LED_OFF)
