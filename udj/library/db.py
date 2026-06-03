@@ -68,6 +68,7 @@ def init_db():
             )
         """)
         for col, defval in [("stems_cached", "0"),
+                            ("stems_failed", "0"),
                             ("analysis_version", "''"),
                             ("first_beat_sec", "0.0"),
                             ("beat_positions_json", "'[]'"),
@@ -173,7 +174,13 @@ def all_tracks(order: str = "artist") -> list[dict]:
 def mark_stems_cached(path: str):
     """Mark that stems are available on disk for this track."""
     with _conn() as con:
-        con.execute("UPDATE tracks SET stems_cached=1 WHERE path=?", (path,))
+        con.execute("UPDATE tracks SET stems_cached=1, stems_failed=0 WHERE path=?", (path,))
+        con.commit()
+
+def mark_stems_failed(path: str):
+    """Mark that stems pre-analysis failed — DSP fallback will be used at playback."""
+    with _conn() as con:
+        con.execute("UPDATE tracks SET stems_failed=1 WHERE path=?", (path,))
         con.commit()
 
 def get_track(path: str) -> Optional[dict]:

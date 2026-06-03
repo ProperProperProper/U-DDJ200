@@ -68,29 +68,13 @@ def _detect_beats(y: np.ndarray, sr: int) -> tuple[float, float, list]:
         fmax=8000,                # focus on kick/snare frequencies
     )
 
-    # Dynamic-programming beat tracker (equivalent to Mixxx's BeatUtils::computeBeats)
-    _, beat_frames = librosa.beat.beat_track(
-        onset_envelope=onset_env, sr=sr, hop_length=hop,
-        units="frames", trim=True,
-    )
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
-
-    # BPM from inter-beat intervals (Mixxx computes this from the beat sequence)
-    bpm_ibi = 0.0
-    if len(beat_times) > 4:
-        ibi   = np.diff(beat_times)
-        med   = float(np.median(ibi))
-        clean = ibi[(ibi > med * 0.8) & (ibi < med * 1.2)]
-        if len(clean) > 2:
-            bpm_ibi = 60.0 / float(np.median(clean))
-
+    # Autocorrelation BPM estimate
     bpm_ac = float(np.median(librosa.beat.tempo(
         onset_envelope=onset_env, sr=sr, hop_length=hop, aggregate=None)))
-    base   = bpm_ibi if bpm_ibi > 0 else bpm_ac
 
-    # Candidate scoring (×0.5, ×1, ×2) — same anti-octave-error heuristic as Mixxx
-    candidates = {round(base * m, 2) for m in (0.5, 1.0, 2.0)
-                  if 60.0 <= base * m <= 220.0} or {round(base, 2)}
+    # Candidate scoring (×0.5, ×1, ×2) — anti-octave-error heuristic
+    candidates = {round(bpm_ac * m, 2) for m in (0.5, 1.0, 2.0)
+                  if 60.0 <= bpm_ac * m <= 220.0} or {round(bpm_ac, 2)}
 
     def _score(bpm: float) -> float:
         period = sr * 60.0 / (bpm * hop)
@@ -99,10 +83,32 @@ def _detect_beats(y: np.ndarray, sr: int) -> tuple[float, float, list]:
         idxs = idxs[idxs < len(onset_env)]
         return float(onset_env[idxs].mean()) if len(idxs) else 0.0
 
-    scored  = sorted(((b, _score(b)) for b in candidates),
-                     key=lambda x: x[1], reverse=True)
-    dj      = [(b, s) for b, s in scored if 80 <= b <= 185]
+    scored   = sorted(((b, _score(b)) for b in candidates),
+                      key=lambda x: x[1], reverse=True)
+    dj       = [(b, s) for b, s in scored if 80 <= b <= 185]
     best_bpm = dj[0][0] if dj else scored[0][0]
+
+    # Re-run beat tracker locked to best_bpm so positions match the winning tempo
+    _, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_env, sr=sr, hop_length=hop,
+        bpm=best_bpm, units="frames", trim=True,
+    )
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
+
+    # Validate grid consistency: if median IBI is badly off, build a uniform grid.
+    # This catches tracks where librosa still returns inconsistent spacings.
+    if len(beat_times) > 4:
+        ibi_arr    = np.diff(beat_times)
+        ibi_target = 60.0 / best_bpm
+        ibi_med    = float(np.median(ibi_arr))
+        bad_ratio  = abs(ibi_med / ibi_target - 1.0)
+        if bad_ratio > 0.15:
+            # Grid is too inconsistent — build uniform grid from first onset + BPM
+            print(f"[Analyzer] inconsistent grid (ibi={ibi_med:.4f}s vs {ibi_target:.4f}s)"
+                  f" — using uniform grid at {best_bpm:.2f} BPM")
+            duration   = (len(beat_times) * ibi_target)
+            first_beat = float(beat_times[0])
+            beat_times = np.arange(first_beat, first_beat + duration, ibi_target)
 
     first_beat_sec  = float(beat_times[0]) if len(beat_times) > 0 else 0.0
     beat_times_list = [round(float(t), 6) for t in beat_times]

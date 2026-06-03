@@ -86,6 +86,8 @@ def _preanalyse_worker(file_path, sample_rate, track_meta, on_done):
             on_done(file_path)
     except Exception as e:
         print(f"[Stems] pre-analysis failed for {file_path}: {e}")
+        from ..library.db import mark_stems_failed
+        mark_stems_failed(file_path)
 
 
 def _cache_path(file_path: str):
@@ -131,11 +133,36 @@ def _load_cache(path, sample_rate: int) -> dict | None:
 
 def _worker(file_path, sample_rate, on_done, on_error, track_meta):
     try:
+        # Check stem_analyzer WAV cache first (richer format, shared with batch tool)
+        try:
+            import sys, pathlib
+            # In PyInstaller bundle, datas land in sys._MEIPASS (not __file__'s parent).
+            # Also try the source tree location for development runs.
+            for _candidate in [
+                getattr(sys, '_MEIPASS', None),
+                str(pathlib.Path(__file__).parent.parent.parent),
+            ]:
+                if _candidate and _candidate not in sys.path:
+                    sys.path.insert(0, _candidate)
+            from stem_analyzer import load_cached_stems, is_cached
+            if is_cached(file_path):
+                wav_stems = load_cached_stems(file_path, sample_rate)
+                if wav_stems is not None:
+                    print(f"[Stems] ✅ WAV cache hit: {pathlib.Path(file_path).name}")
+                    on_done(wav_stems)
+                    return
+                else:
+                    print(f"[Stems] WAV cache found but load failed: {pathlib.Path(file_path).name}")
+            else:
+                print(f"[Stems] no WAV cache for {pathlib.Path(file_path).name} — running demucs")
+        except Exception as _sa_err:
+            print(f"[Stems] stem_analyzer import failed: {_sa_err} — falling back to .npz")
+
         cache = _cache_path(file_path)
         if cache.exists():
             result = _load_cache(cache, sample_rate)
             if result is not None:
-                print(f"[Stems] loaded from cache: {cache.name}")
+                print(f"[Stems] loaded from .npz cache: {cache.name}")
                 on_done(result)
                 return
             # Version mismatch — delete stale cache and re-run

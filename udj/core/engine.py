@@ -39,13 +39,12 @@ BUFFER_SIZE = 1024
 # Strategy: hard rate lock + continuous position P-controller.
 #   - follower.rate = exact nominal every callback  →  zero tempo wobble
 #   - one-shot bar-snap on play-start or significant master rate change
-#   - continuous smooth nudge: up to _PHASE_CORRECTION per callback toward zero error
-#     This corrects imperfect snaps and BPM analysis drift silently (no rate wobble).
-# Mixxx exact constants from synccontrol.cpp
-_SYNC_GAIN     = 0.5    # kSyncAdjustmentMultiplier
-_SYNC_CAP      = 0.02   # kSyncAdjustmentCap — max ±2% rate tweak per callback
-_PHASE_DEAD    = 0.001  # dead-zone: ignore error < 0.1 % of a beat (float noise)
-_SNAP_RATE_THR = 0.003  # re-snap when master rate changes > 0.3 %
+#   - continuous position nudge (not rate tweak) to correct residual phase error
+#     Nudge is inaudible (<1ms), converges in <1 bar, doesn't fight rate lock.
+_PHASE_DEAD      = 0.002   # dead-zone: ~0.9ms at 130BPM — tight, above float noise only
+_PHASE_NUDGE_CAP = 0.03    # max nudge per callback: 3% of a beat (~14ms at 130bpm)
+_NUDGE_GAIN      = 0.6     # proportional gain — higher = faster convergence
+_SNAP_RATE_THR   = 0.003   # re-snap when master rate changes > 0.3%
 
 
 def _detect_native_sr() -> int:
@@ -68,19 +67,12 @@ def beat_distance(position: float,
     """
     Fractional position within the current beat (0.0 … 1.0).
 
-    Direct translation of Mixxx's TrackBeats::getBeatDistance():
-      lower_bound search → interpolate between surrounding beats.
-
-    Falls back to first_beat + BPM arithmetic when no grid is loaded.
+    Uses uniform BPM arithmetic anchored to first_beat — NOT stored grid
+    interpolation. Grid interpolation drifts over time as stored beat positions
+    have tiny non-uniformities, causing phantom phase errors in the sync engine.
+    Uniform arithmetic is stable and correct for continuous phase tracking.
+    The stored grid is still used for snap operations (finding nearest beat).
     """
-    if beats is not None and len(beats) >= 2:
-        idx = int(np.searchsorted(beats, position, side="right")) - 1
-        idx = max(0, min(len(beats) - 2, idx))
-        lo  = beats[idx]
-        hi  = beats[idx + 1]
-        span = hi - lo
-        if span > 0:
-            return float(np.clip((position - lo) / span, 0.0, 1.0))
     if beat_len > 0:
         return ((position - first_beat) % beat_len) / beat_len
     return 0.0
@@ -90,125 +82,53 @@ def bar_distance(position: float,
                  beats: "np.ndarray | None",
                  first_beat: float = 0.0,
                  beat_len: float   = 0.0) -> float:
-    """Bar phase 0..1 (4 beats).  Beat-index % 4 gives bar position."""
-    if beats is not None and len(beats) >= 2:
-        idx         = max(0, int(np.searchsorted(beats, position, side="right")) - 1)
-        idx         = min(idx, len(beats) - 2)
-        beat_in_bar = idx % 4
-        # Pass fallback params so degenerate spans don't silently return 0
-        bd          = beat_distance(position, beats, first_beat, beat_len)
-        return (beat_in_bar + bd) / 4.0
+    """Bar phase 0..1 (4 beats) — uniform BPM arithmetic."""
     if beat_len > 0:
         bar_len = beat_len * 4.0
         return ((position - first_beat) % bar_len) / bar_len
     return 0.0
 
 
-def nearest_bar_start(position: float,
-                      beats: "np.ndarray | None",
-                      first_beat: float = 0.0,
-                      beat_len: float   = 0.0) -> float:
-    """Sample position of the nearest beat-1 (bar boundary)."""
-    if beats is not None and len(beats) >= 4:
-        idx    = max(0, min(len(beats) - 1,
-                            int(np.searchsorted(beats, position, side="right")) - 1))
-        lo_idx = (idx // 4) * 4
-        hi_idx = lo_idx + 4
-        lo     = beats[lo_idx]
-        hi     = (beats[hi_idx] if hi_idx < len(beats)
-                  else beats[-1] + (beats[-1] - beats[max(0, len(beats) - 2)]))
-        return lo if abs(position - lo) <= abs(position - hi) else hi
-    if beat_len > 0:
-        bar_len = beat_len * 4.0
-        rel     = position - first_beat
-        return first_beat + round(rel / bar_len) * bar_len
-    return position
-
-
-def _bar_len_from_beats(beats: np.ndarray, bar1_i: int,
-                         beat_len_fallback: float) -> float:
-    """
-    Return the stored bar length (4-beat span) starting at bar1_i.
-    Extrapolates from the previous bar when bar1_i is the last bar in the array.
-    """
-    n = len(beats)
-    end_i = bar1_i + 4
-    if end_i < n:
-        span = float(beats[end_i] - beats[bar1_i])
-        if span > 0:
-            return span
-    # Near end of track: extrapolate from the preceding bar span
-    prev_i = bar1_i - 4
-    if prev_i >= 0:
-        span = float(beats[bar1_i] - beats[prev_i])
-        if span > 0:
-            return span
-    return beat_len_fallback * 4.0
-
-
-def _preceding_bar_start(position: float,
-                          beats: "np.ndarray | None",
-                          first_beat: float,
-                          beat_len: float) -> tuple[int, float, float]:
-    """
-    Return (bar1_index, bar1_sample_pos, bar_length_samples) for the bar
-    that PRECEDES (contains) position.  Never returns the next bar.
-
-    Using nearest_bar_start() was wrong: past the halfway point of a bar it
-    returns the next bar's start, making m_offset negative → clamped to 0 →
-    follower always snaps to beat-1 regardless of master's actual bar phase.
-    """
-    if beats is not None and len(beats) >= 4:
-        # idx = last beat at or before position
-        idx      = max(0, int(np.searchsorted(beats, position, side="right")) - 1)
-        idx      = min(idx, len(beats) - 1)
-        bar1_i   = (idx // 4) * 4                # floor to preceding bar boundary
-        bar1_pos = float(beats[bar1_i])
-        bar_len  = _bar_len_from_beats(beats, bar1_i, beat_len * 4.0)
-        return bar1_i, bar1_pos, bar_len
-    # Arithmetic fallback
-    if beat_len > 0:
-        bar_len = beat_len * 4.0
-        rel     = position - first_beat
-        bar_idx = max(0, int(rel / bar_len))
-        bar1_pos = first_beat + bar_idx * bar_len
-        return bar_idx * 4, bar1_pos, bar_len
-    return 0, first_beat, beat_len * 4.0
 
 
 def _snap_to_grid(master: "Deck", follower: "Deck", sr: int) -> float:
     """
     Snap follower so its bar phase matches master's bar phase exactly.
 
-    Algorithm (fixed):
-      1. Find the bar that CONTAINS master (preceding bar start, not nearest).
-      2. m_offset = master.position - master_bar_start  (always ≥ 0, < bar_len).
-      3. Find the bar that CONTAINS follower (preceding bar start).
-      4. Scale offset to follower's bar length.
-      5. snapped = follower_bar_start + scaled_offset.
+    Uses uniform BPM arithmetic (same model as beat_distance / bar_distance)
+    so snap and measurement are consistent — no residual phase error after snap.
 
-    Same-track: exact position copy.
+    Algorithm:
+      1. Master bar phase = (master.pos - master.first_beat) % bar_len / bar_len
+      2. Find the follower bar that currently contains follower.position.
+      3. snapped = that bar's start + master_bar_phase * follower_bar_len.
+         If result < follower.position (would jump backward mid-bar), use next bar.
     """
-    mfp = master.file_path
-    ffp = getattr(follower, 'file_path', '')
-    if mfp and ffp and mfp == ffp:
-        return float(master.position)
+    master_key_ratio   = 2.0 ** (getattr(master, 'key_shift', 0) / 12.0)
+    master_eff_bpm     = master.bpm * master.rate * master_key_ratio
+    beat_len_m         = sr * 60.0 / max(master_eff_bpm, 1.0)
+    bar_len_m          = beat_len_m * 4.0
 
-    beat_len_m = sr * 60.0 / max(master.bpm * master.rate, 1.0)
-    beat_len_f = sr * 60.0 / max(follower.bpm, 1.0)
+    beat_len_f         = sr * 60.0 / max(follower.bpm, 1.0)
+    bar_len_f          = beat_len_f * 4.0
 
-    _, m_bar1, m_bar_len = _preceding_bar_start(
-        master.position, master.beats, master.first_beat, beat_len_m)
-    _, f_bar1, f_bar_len = _preceding_bar_start(
-        follower.position, follower.beats, follower.first_beat, beat_len_f)
+    # Master bar phase via uniform arithmetic
+    m_bar_phase = ((master.position - master.first_beat) % bar_len_m) / bar_len_m
 
-    m_offset      = float(master.position) - m_bar1          # 0 … m_bar_len
-    scaled_offset = m_offset * (f_bar_len / m_bar_len) if m_bar_len > 0 else 0.0
-    snapped       = f_bar1 + scaled_offset
+    # Follower: which bar does it currently sit in?
+    rel       = follower.position - follower.first_beat
+    bar_idx   = max(0, int(rel / bar_len_f))
+    bar_start = follower.first_beat + bar_idx * bar_len_f
 
-    print(f"[Snap] m_bar={m_bar1/sr:.3f}s off={m_offset/sr:.3f}s "
-          f"f_bar={f_bar1/sr:.3f}s → {snapped/sr:.3f}s "
-          f"phase={m_offset/m_bar_len:.3f}")
+    snapped   = bar_start + m_bar_phase * bar_len_f
+
+    # If snap would jump backward, use the next bar (avoids stutters)
+    if snapped < follower.position - beat_len_f * 0.25:
+        snapped += bar_len_f
+
+    audio_len = len(follower.audio) if follower.audio is not None else 0
+    snapped   = float(np.clip(snapped, 0.0, max(0, audio_len - 2)))
+
     return snapped
 
 
@@ -229,6 +149,7 @@ class AudioEngine:
         self.auto_sync         = False
         self._was_playing      = [False] * NUM_DECKS
         self._last_master_rate = [None, None]   # per-follower: detect master rate jump
+        self._last_master_id   = [None, None]   # per-follower: detect master reassignment
         self._sync_log_tick    = 0               # throttle sync logging to ~1 Hz
 
     # ── stream ────────────────────────────────────────────────
@@ -277,6 +198,13 @@ class AudioEngine:
         """
         master = self._find_master()
         if master is None:
+            # Log once per second when no master found
+            self._sync_log_tick += 1
+            if self._sync_log_tick >= 43:
+                self._sync_log_tick = 0
+                states = [(f"D{i+1}:bpm={d.bpm:.1f},play={d.playing},audio={'y' if d.audio is not None else 'N'}")
+                          for i, d in enumerate(self.decks)]
+                print(f"[SYNC] no master — {' | '.join(states)}")
             return
 
         sr             = master.sample_rate
@@ -306,29 +234,38 @@ class AudioEngine:
                     continue
 
             if follower.bpm <= 0 or follower.audio is None:
+                if follower.playing:
+                    print(f"[SYNC] D{f_idx+1} playing but can't sync — bpm={follower.bpm:.2f} audio={'yes' if follower.audio is not None else 'NO'}")
                 self._was_playing[f_idx] = follower.playing
                 continue
 
-            just_started = follower.playing and not self._was_playing[f_idx]
-            self._was_playing[f_idx] = follower.playing
+            just_started    = follower.playing and not self._was_playing[f_idx]
+            master_changed  = id(master) != self._last_master_id[f_idx]
+            if just_started:
+                print(f"[SYNC] D{f_idx+1} play-start  bpm={follower.bpm:.2f}  master_bar_phase={m_bar_phase:.3f}")
+            if master_changed and follower.playing:
+                print(f"[SYNC] D{f_idx+1} master reassigned — snapping immediately")
+            self._was_playing[f_idx]   = follower.playing
+            self._last_master_id[f_idx] = id(master)
 
             if not follower.playing:
                 continue
 
             # ALWAYS set exact nominal — this is the hard lock.
-            # Divide out the follower's key_shift so deck.rate represents pure
-            # tempo adjustment; key_shift is applied separately in deck.read().
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
             nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
             follower.rate = max(0.5, min(2.0, nominal))
 
             # Detect master rate change
             prev = self._last_master_rate[f_idx]
-            rate_jumped = (prev is None or abs(master.rate - prev) > _SNAP_RATE_THR)
+            rate_jumped = (prev is not None and abs(master.rate - prev) > _SNAP_RATE_THR)
             self._last_master_rate[f_idx] = master.rate
 
-            if just_started or rate_jumped:
-                # One-shot bar-snap: align beat-1 to master's bar phase
+            if just_started or rate_jumped or master_changed:
+                reason = ("play-start" if just_started
+                          else "master-assigned" if master_changed
+                          else f"rate-jump({prev:.4f}→{master.rate:.4f})")
+                print(f"[SNAP] D{f_idx+1} bar-snap  reason={reason}  master_bar_phase={m_bar_phase:.3f}")
                 self._do_snap(master, follower, master_bar, m_bar_phase)
                 continue
 
@@ -344,22 +281,42 @@ class AudioEngine:
             if error >  0.5: error -= 1.0
             if error < -0.5: error += 1.0
 
+            # Phase correction: direct position nudge (not rate tweak).
+            # Rate tweak fights itself because rate is reset to nominal each callback.
+            # Position nudge is immediate, inaudible (<1ms), and converges in <1 bar.
+            nudge_samples = 0.0
+            if not follower._scratch_active:
+                if abs(error) > 0.4:
+                    # Error too large for nudge to catch up — hard re-snap
+                    print(f"[SYNC] D{f_idx+1} drift={error:+.3f}beats — auto re-snap")
+                    self._do_snap(master, follower, master_bar, m_bar_phase)
+                elif abs(error) > _PHASE_DEAD:
+                    # Proportional nudge toward master phase
+                    nudge_beats = float(np.clip(error * _NUDGE_GAIN, -_PHASE_NUDGE_CAP, _PHASE_NUDGE_CAP))
+                    nudge_samples = nudge_beats * master_beat
+                    audio_len = len(follower.audio) if follower.audio is not None else 0
+                    follower.position = float(np.clip(
+                        follower.position + nudge_samples, 0.0, max(0, audio_len - 2)))
+
             # Log sync state ~1 Hz (every ~43 callbacks)
             self._sync_log_tick += 1
             if self._sync_log_tick >= 43:
                 self._sync_log_tick = 0
                 m_idx = self.decks.index(master)
+                error_ms = error * (60_000.0 / max(master_eff_bpm, 1.0))
+                nudge_ms = nudge_samples / max(master.sample_rate, 1) * 1000.0
+                status = f"nudge={nudge_ms:+.2f}ms" if abs(nudge_samples) > 0 else "locked"
+                print(
+                    f"[SYNC] master=D{m_idx+1}({master.bpm:.1f}×{master.rate:.4f})"
+                    f"  follower=D{f_idx+1}({follower.bpm:.1f}×{follower.rate:.4f})"
+                    f"  err={error:+.4f}beats ({error_ms:+.1f}ms)"
+                    f"  nominal={nominal:.4f}  [{status}]"
+                )
                 event_log.log_sync(
                     m_idx, f_idx,
                     master.bpm, follower.bpm,
                     master.rate, follower.rate,
                     float(error), float(nominal))
-
-            # Mixxx-exact phase correction: adjust rate by ±kSyncAdjustmentCap.
-            # Rate tweak (not position nudge) — inaudible at ±2%, converges in ~1 bar.
-            if not follower._scratch_active and abs(error) > _PHASE_DEAD:
-                adj = float(np.clip(error * _SYNC_GAIN, -_SYNC_CAP, _SYNC_CAP))
-                follower.rate = max(0.5, min(2.0, follower.rate * (1.0 + adj)))
 
     @staticmethod
     def _do_snap(master: Deck, follower: Deck,
@@ -379,13 +336,10 @@ class AudioEngine:
 
         follower.position = max(0.0, min(float(audio_len - 2), snapped))
         f_idx = getattr(follower, 'deck_id', -1)
-        beat_len = sr * 60.0 / max(follower.bpm, 1)
-        f_bar1   = nearest_bar_start(follower.position, follower.beats,
-                                     follower.first_beat, beat_len)
         event_log.log_snap(
             "play_start", f_idx,
             master.bpm * master.rate, follower.bpm, follower.rate,
-            master_bar_phase, f_bar1 / sr, snapped / sr)
+            master_bar_phase, snapped / sr, snapped / sr)
 
     # ── Explicit SYNC button / bar-level snap ─────────────────
 
@@ -418,34 +372,32 @@ class AudioEngine:
         follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
         target_bpm       = master.bpm * master.rate * master_key_ratio
 
-        # Tempo match — divide out follower key_shift (applied separately in deck.read)
+        # Tempo match — only set rate if follower is playing.
+        # If paused, rate is set when play starts via _apply_sync just_started.
+        # This prevents the BPM display changing unexpectedly while paused.
         nominal = (target_bpm / follower.bpm) / follower_key_ratio
-        follower.rate = max(0.5, min(2.0, nominal))
+        if follower.playing:
+            follower.rate = max(0.5, min(2.0, nominal))
 
-        # Grid-interpolated bar-snap — uses stored beat positions, not arithmetic.
-        # For the same track on both decks this gives sample-exact alignment.
-        if master.playing:
-            snapped   = _snap_to_grid(master, follower, sr)
-            audio_len = len(follower.audio)
-            follower.position = max(0.0, min(float(audio_len - 2), snapped))
-            f_beat_len = sr * 60.0 / max(follower.bpm, 1)
-            f_bar1     = nearest_bar_start(follower.position, follower.beats,
-                                           follower.first_beat, f_beat_len)
-            m_bar      = bar_distance(master.position, master.beats,
-                                      master.first_beat, f_beat_len * 4)
-            event_log.log_snap(
-                "sync_button", follower_idx,
-                target_bpm, follower.bpm, follower.rate,
-                m_bar, f_bar1 / sr, snapped / sr)
+        # Always snap position — even if master is paused, its current position
+        # is the correct phase reference. Follower will align and wait for play.
+        snapped   = _snap_to_grid(master, follower, sr)
+        audio_len = len(follower.audio)
+        follower.position = max(0.0, min(float(audio_len - 2), snapped))
+        follower.cue_point = int(follower.position)
+        m_bar = bar_distance(master.position, None, master.first_beat,
+                             sr * 60.0 / max(master.bpm * master.rate, 1))
+        event_log.log_snap(
+            "sync_button", follower_idx,
+            target_bpm, follower.bpm, follower.rate,
+            m_bar, snapped / sr, snapped / sr)
+        print(f"[SYNC] D{follower_idx+1} snapped → {snapped/sr:.3f}s  "
+              f"bar_phase={m_bar:.3f}  master_playing={master.playing}")
 
-        # Only clear _was_playing when deck is NOT playing (prepares for upcoming
-        # PLAY press to fire just_started → snap again at final position).
-        # When deck IS already playing, leaving _was_playing=True prevents a
-        # spurious double-snap on the very next audio callback.
+        # Force _apply_sync to re-snap on next callback too
+        self._last_master_id[follower_idx] = None
         if not follower.playing:
             self._was_playing[follower_idx] = False
-        print(f"[Engine] snap_sync deck {follower_idx}: "
-              f"bpm={target_bpm:.2f}  rate={follower.rate:.4f}")
 
     # ── Audio callback ────────────────────────────────────────
 

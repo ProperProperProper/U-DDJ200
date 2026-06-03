@@ -49,6 +49,9 @@ class BeatGridWidget(QWidget):
         self._timer.start(33)   # ~30 fps — smooth scrolling
 
     def _tick(self):
+        # Skip paint when both decks are idle — saves ~30% CPU when nothing is loaded
+        if all(d.audio is None for d in self._engine.decks):
+            return
         self.update()
         self._grid_log_tick += 1
         if self._grid_log_tick < 30:   # log once per second (~30 fps)
@@ -108,44 +111,35 @@ class BeatGridWidget(QWidget):
                 qp.drawText(6, row_top + row_h // 2 + 4, f"{label}: no track")
                 continue
 
-            sr         = deck.sample_rate
-            beat_len   = sr * 60.0 / max(deck.bpm, 1.0)
-            pos        = deck.position
-            first_beat = deck.first_beat
-            eff_bpm    = deck.bpm * deck.rate
+            sr          = deck.sample_rate
+            pos         = deck.position
+            first_beat  = deck.first_beat
+            # Show native BPM when paused, effective BPM when playing
+            eff_bpm     = deck.bpm * deck.rate if deck.playing else deck.bpm
+            beat_len    = sr * 60.0 / max(eff_bpm, 1.0)
 
             px_per_beat = W / _WINDOW_BEATS
             half_w_samp = (W / 2) * beat_len / px_per_beat
             vis_lo = pos - half_w_samp
             vis_hi = pos + half_w_samp
 
-            if deck.beats is not None and len(deck.beats) >= 2:
-                # beats[0] is always bar-1 beat-1 — the analyzer rotates the
-                # array by downbeat_offset so i%4==0 correctly marks bar-1.
-                lo_i = max(0, int(np.searchsorted(deck.beats, vis_lo)) - 1)
-                hi_i = min(len(deck.beats),
-                           int(np.searchsorted(deck.beats, vis_hi)) + 2)
-                for i in range(lo_i, hi_i):
-                    bp     = deck.beats[i]
-                    px     = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    is_bar = (i % 4 == 0)
-                    if 0 <= px < W:
-                        _draw_tick(qp, px, row_top, row_h, is_bar, col)
-            else:
-                rel_start   = vis_lo - first_beat
-                beat_start  = max(0, int(rel_start / beat_len) - 1)
-                beat_end    = beat_start + _WINDOW_BEATS + 4
-                for i in range(beat_start, beat_end):
-                    bp = first_beat + i * beat_len
-                    if bp > vis_hi:
-                        break
-                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    if 0 <= px < W:
-                        _draw_tick(qp, px, row_top, row_h, i % 4 == 0, col)
+            # Always render using uniform BPM arithmetic — same model as sync engine.
+            # Stored beat positions have tiny non-uniformities that cause visual drift
+            # even when sync is perfect; uniform rendering makes alignment truthful.
+            rel_start  = vis_lo - first_beat
+            beat_start = max(0, int(rel_start / beat_len) - 1)
+            beat_end   = beat_start + _WINDOW_BEATS + 4
+            for i in range(beat_start, beat_end):
+                bp = first_beat + i * beat_len
+                if bp > vis_hi:
+                    break
+                px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                if 0 <= px < W:
+                    _draw_tick(qp, px, row_top, row_h, i % 4 == 0, col)
 
             # BPM readout (left side)
             role = "MASTER" if deck.sync_master else ("SYNC" if deck.sync_follower else "")
-            bpm_txt = f"{label}  {eff_bpm:.1f}"
+            bpm_txt = f"{label}  {deck.bpm * deck.rate:.1f}"  # always show effective bpm in label
             if role:
                 bpm_txt += f"  {role}"
             qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 180), 1))

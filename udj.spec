@@ -13,6 +13,7 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('udj', 'udj'),
+        ('stem_analyzer.py', '.'),
     ],
     hiddenimports=[
         # sounddevice / PortAudio

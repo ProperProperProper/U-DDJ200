@@ -165,9 +165,13 @@ class Deck:
                 self.phrases         = None
                 self.gain_linear     = 1.0
 
-        print(f"[Deck {self.deck_id}] loaded  bpm={self.bpm:.2f}  "
+        n_beats = len(self.beats) if self.beats is not None else 0
+        n_cues  = sum(1 for c in self.hot_cues if c is not None)
+        print(f"[DECK{self.deck_id+1}] LOADED  '{getattr(self,'title','?')}'  "
+              f"bpm={self.bpm:.2f}  key={getattr(self,'key','?')}  "
               f"first_beat={self.first_beat/self.sample_rate:.3f}s  "
-              f"dur={self.duration:.1f}s")
+              f"beats={n_beats}  cues={n_cues}  dur={self.duration:.1f}s  "
+              f"gain={getattr(self,'gain_linear',1.0):.3f}x")
         if self.on_track_loaded:
             self.on_track_loaded(self.deck_id)
 
@@ -175,6 +179,11 @@ class Deck:
 
     def play_pause(self):
         self.playing = not self.playing
+        pos_sec = self.position / max(self.sample_rate, 1)
+        print(f"[DECK{self.deck_id+1}] {'▶ PLAY' if self.playing else '⏸ PAUSE'}"
+              f"  pos={pos_sec:.3f}s  bpm={self.bpm:.2f}"
+              f"  beats={'yes' if self.beats is not None and len(self.beats) else 'NO'}"
+              f"  audio={'yes' if self.audio is not None else 'NO'}")
         if self.on_play_state_changed:
             self.on_play_state_changed(self.deck_id, self.playing)
 

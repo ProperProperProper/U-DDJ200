@@ -29,12 +29,12 @@ def _analysis_status(row: dict) -> tuple[str, str]:
     has_lufs    = row.get("loudness_lufs") is not None
     has_camelot = bool(row.get("camelot"))
     has_bpm     = bool(row.get("bpm"))
-    has_stems   = bool(row.get("stems_cached"))
+    has_stems   = bool(row.get("stems_cached")) or bool(row.get("stems_failed"))
 
     if has_beats and has_phrases and has_lufs and has_camelot and has_stems:
-        return "●", "#00dd88"   # fully analysed including stems — green
+        return "●", "#00dd88"   # fully analysed (stems cached or DSP fallback) — green
     if has_beats and has_phrases and has_lufs and has_camelot:
-        return "●", "#44aaff"   # BPM/key done, stems pending — blue
+        return "●", "#44aaff"   # BPM/key done, stems queued — blue
     if has_bpm and has_beats:
         return "●", "#ffaa00"   # beats done, missing extras — amber
     if has_bpm:
@@ -281,23 +281,16 @@ class LibraryWidget(QWidget):
         ))
 
     def _analyse_after_scan(self):
-        """After scanning, run BPM analysis and stem pre-analysis on all new tracks."""
+        """After scanning, run BPM/key/grid analysis on new tracks.
+        Stems are loaded on-demand when a track is put on a deck — not pre-analysed here."""
         from ..library.analyzer import analyse_track
-        from ..core.stems import preanalyse_stems
-        from ..core.engine import SAMPLE_RATE
 
         tracks = all_tracks()
         for t in tracks:
-            # BPM/key/grid analysis
             needs_analysis = not (t.get("bpm") and
                                   t.get("beat_positions_json") not in (None, "", "[]"))
             if needs_analysis:
                 analyse_track(t["path"], on_done=lambda _: None, force=False)
-
-            # Stems pre-analysis
-            if not t.get("stems_cached") and not stems_are_cached(t["path"]):
-                preanalyse_stems(t["path"], SAMPLE_RATE,
-                                 track_meta=t, on_done=lambda _: None)
 
     def _selected_track(self) -> Optional[dict]:
         idxs = self._table.selectedIndexes()

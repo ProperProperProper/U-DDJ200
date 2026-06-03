@@ -203,13 +203,16 @@ class DDJ200:
 
                 if note == NOTE_PLAY and val:
                     deck = self.engine.deck(d)
+                    # Force just_started to fire in _apply_sync on the very next callback
+                    self.engine._was_playing[d] = False
                     deck.play_pause()
                     self._send(ch, NOTE_PLAY,
                                LED_ON if deck.playing else LED_OFF)
-                    # Re-snap if resuming as a sync follower — re-sync from master's perspective
                     if deck.playing and deck.sync_follower:
-                        master_d = 1 - d
-                        self._sync_deck(master_d)  # re-press master's sync to re-snap follower
+                        # Snap this deck directly to master bar phase, then
+                        # _apply_sync will also snap via just_started on next callback
+                        self.engine.snap_sync(d)
+                        print(f"[Play] D{d+1} play+snap  sync_follower=True")
                     return
 
                 if note == NOTE_CUE:
@@ -245,8 +248,13 @@ class DDJ200:
                         self._loop_recording[d] = False
                         self._send(CH[d], NOTE_SYNC, LED_OFF)
                         return
-                    # Normal Sync: THIS deck becomes FOLLOWER, other deck is master
-                    # rekordbox behavior: SYNC makes deck align to whatever is playing
+                    # If this deck is already MASTER, re-snap the slave immediately
+                    if deck.sync_master:
+                        slave_idx = 1 - d
+                        self.engine.snap_sync(slave_idx)
+                        print(f"[Sync] master D{d+1} re-snapped slave D{slave_idx+1}")
+                        return
+                    # Otherwise: THIS deck becomes FOLLOWER, other deck is master
                     self._sync_as_follower(d)
                     return
 
@@ -321,7 +329,7 @@ class DDJ200:
                         if self._eq_apply(d, 2, val):
                             self.engine.mixer.set_eq_raw(d, "low", val)
                     else:
-                        # LOW = bass (sub-bass and kick body — low frequency content)
+                        # LOW = bass only
                         self.engine.deck(d).set_stem_volume("bass", val / 127.0)
                     return
                 if note == CC_JOG_SIDE and not self._jog_touch[d]:
@@ -358,10 +366,16 @@ class DDJ200:
                 self.engine.mixer.set_crossfader_raw(raw)
                 return
             if note == CC_CFX[0]:
-                self.engine.mixer.set_fx_raw(0, val)   # CFX = color FX always
+                if self._shift[0]:
+                    self.engine.mixer.set_fx_raw(0, val)   # Shift+CFX = color FX
+                else:
+                    self.engine.deck(0).set_stem_volume("drums", val / 127.0)
                 return
             if note == CC_CFX[1]:
-                self.engine.mixer.set_fx_raw(1, val)   # CFX = color FX always
+                if self._shift[1]:
+                    self.engine.mixer.set_fx_raw(1, val)   # Shift+CFX = color FX
+                else:
+                    self.engine.deck(1).set_stem_volume("drums", val / 127.0)
                 return
 
         # ── Performance pads — mode-aware ─────────────────────
@@ -483,6 +497,16 @@ class DDJ200:
         this.sync_follower  = False
         other.sync_follower = True
         other.sync_master   = False
+
+        sr = this.sample_rate
+        m_pos_sec = this.position / max(sr, 1)
+        from ..core.engine import bar_distance
+        bar_len = sr * 60.0 / max(this.bpm * this.rate, 1) * 4
+        m_phase = bar_distance(this.position, None, this.first_beat, bar_len / 4 * 4)
+        print(f"[MASTER SWITCH] D{d+1}=MASTER  D{2-d}=FOLLOWER"
+              f"  master_pos={m_pos_sec:.3f}s  master_bpm={this.bpm*this.rate:.2f}"
+              f"  bar_phase={m_phase:.3f}"
+              f"  follower_bpm={other.bpm:.2f}  follower_pos={other.position/max(sr,1):.3f}s")
 
         # Snap the follower (other deck) to this master
         self.engine.snap_sync(1 - d)
