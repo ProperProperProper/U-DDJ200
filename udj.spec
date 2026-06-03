@@ -108,7 +108,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='U-DJ.app',
-    icon=None,
+    icon='assets/udj.icns',
     bundle_identifier='com.udj.app',
     info_plist={
         'CFBundleName': 'U-DJ',
