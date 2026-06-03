@@ -35,16 +35,16 @@ Sync holds itself — continuous phase nudge corrects drift automatically. The b
 
 Stems load automatically when you put a track on a deck. The **⏳ STEMS** badge shows on the deck while demucs processes (~90 sec on Apple Silicon). Once cached the badge disappears — next load is instant.
 
-**Stem knobs:**
+**8 knobs per deck** — each hardware knob does double duty (normal = stem, Shift = EQ/FX). The mixer panel shows all 8 in two columns and updates visually when you move the hardware knobs.
 
-| Knob | Controls | Shift held |
-|------|----------|------------|
-| HI | Vocals | EQ High |
-| MID | Other / Melody | EQ Mid |
-| LOW | Bass | EQ Low |
-| CFX Super Knob | **Drums** | Color FX |
+| Hardware knob | Normal | Shift held |
+|---------------|--------|------------|
+| HI | Vocals stem | EQ High |
+| MID | Other / Melody stem | EQ Mid |
+| LOW | Bass stem | EQ Low |
+| CFX Super Knob | Drums stem | Color FX depth |
 
-Center = full volume. Left = kill. Right of center = no change (no boost).
+Stem knobs: center = full volume, left = kill. EQ knobs: center = 0 dB, full left = kill, full right = +10 dB.
 
 **Stem pads** (STEMS pad mode):
 - Pads 1–4: toggle stem on/off (drums / bass / other / vocals)
@@ -128,7 +128,7 @@ Pad mode: **PAD FX** — hold to apply, release to bypass
 
 ## Color FX
 
-**Shift + CFX knob** — wet/dry depth for the selected color FX. Select FX type from the mixer panel dropdown.
+**CFX Super Knob (Shift held)** — wet/dry depth. Select FX type from the mixer panel dropdown above the DRUMS/FX row.
 
 Available: FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRIVE
 
@@ -136,7 +136,7 @@ Available: FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRI
 
 ## EQ
 
-**Hold Shift + turn HI / MID / LOW** — 3-band EQ. Takes effect immediately from wherever the knob is. Full left = kill. Full right = +10 dB.
+**Hold Shift + turn HI / MID / LOW** — 3-band EQ. Takes effect immediately. Full left = kill. Full right = +10 dB. Current values shown in the mixer panel EQ column.
 
 ---
 
