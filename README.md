@@ -2,7 +2,7 @@
 
 Professional DJ app for macOS. Pioneer DDJ-200 controller. AI stem separation. Rekordbox-style beat sync.
 
-<img width="1461" height="808" alt="Screenshot 2026-06-03 at 10 35 06 PM" src="https://github.com/user-attachments/assets/28111f23-e412-40ec-8ac9-6d7eb598b065" />
+<img width="1461" height="808" alt="Screenshot 2026-06-03 at 10 35 06 PM" src="https://github.com/user-attachments/assets/28111f23-e412-40ec-8ac9-6d7eb598b065" />
 
 ---
 
@@ -33,28 +33,60 @@ Sync holds itself — continuous phase nudge corrects drift automatically. The b
 
 ## Stems
 
-Stems load automatically when you put a track on a deck. The **⏳ STEMS** badge shows on the deck while demucs processes (~90 sec on Apple Silicon). Once cached the badge disappears — next load is instant.
+Stems load automatically when you put a track on a deck. The mixer shows a per-channel status badge:
 
-**8 knobs per deck** — each hardware knob does double duty (normal = stem, Shift = EQ/FX). The mixer panel shows all 8 in two columns and updates visually when you move the hardware knobs.
+| Badge | Meaning |
+|-------|---------|
+| `○ NO TRACK` | Nothing loaded |
+| `◌ STEMS LOADING…` | Demucs separating (~90s first time, instant from cache) |
+| `● STEMS READY` | Stems active — blend knobs live |
 
-| Hardware knob | Normal | Shift held |
-|---------------|--------|------------|
-| HI | Vocals stem | EQ High |
-| MID | Other / Melody stem | EQ Mid |
-| LOW | Bass stem | EQ Low |
-| CFX Super Knob | Drums stem | Color FX depth |
+U-DJ uses **htdemucs_6s** (6-stem ML model) giving: **vocals, drums, bass, other, guitar/lead, piano/pad**. Falls back to htdemucs_ft (4-stem) if unavailable, with DSP split of "other" into lead and pad.
 
-Stem knobs: center = full volume, left = kill. EQ knobs: center = 0 dB, full left = kill, full right = +10 dB.
+Post-processing is tuned for **Detroit techno / electronic music**:
+- Kick: sub-body preserved down to 30 Hz, aggressive transient punch restore
+- Bass: high-cut at 1200 Hz so 303 acid squeal/resonance passes through, +3 dB sub boost
+- Drums: +2 dB hi-hat air above 10 kHz, -3 dB de-mud at 300 Hz
+- Guitar/Lead: presence boost +2 dB at 2–5 kHz
+- Piano/Pad: warmth boost +1.5 dB at 200–800 Hz
 
-**Stem pads** (STEMS pad mode):
-- Pads 1–4: toggle stem on/off (drums / bass / other / vocals)
-- Pads 5–8: hold to solo (all others mute while held, restore on release)
+### Stem Blend Knobs
 
-**Pre-compute stems for your whole library** (so they're instant at the gig):
+**3 knobs per deck** in the mixer panel. Each knob is a crossfader between two stems:
+
+| Knob | Turn left | Center | Turn right |
+|------|-----------|--------|------------|
+| **VOC ←→ DRM** | Kill vocals (drums plays) | Both full | Kill drums (vocals plays) |
+| **BSS ←→ OTH** | Kill bass (other plays) | Both full | Kill other (bass plays) |
+| **LEAD ←→ PAD** | Kill lead synth (pad plays) | Both full | Kill pad (lead plays) |
+
+Knobs reset to center on every track load. Cuts are hard at the extremes (no bleed). Knobs have no effect until **● STEMS READY** — the full track plays until then.
+
+**Pre-compute stems for your whole library** (instant at the gig):
 ```bash
 python3 stem_example.py /path/to/your/music
 ```
-Cached to `~/udj_cache/` as WAV files.
+Cached to `~/udj_cache/`.
+
+---
+
+## EQ
+
+**3 EQ knobs per deck** — HI / MID / LOW — sit alongside the stem blend knobs in the mixer panel.
+
+Center = 0 dB. Full left = kill (−∞). Full right = +10 dB.
+
+**Hold Shift on DDJ-200** then turn HI / MID / LOW hardware knobs for EQ.
+
+---
+
+## Color FX
+
+**CFX Super Knob (Shift held)** — wet/dry depth. Select FX type from the mixer panel dropdown.
+
+Available: FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRIVE
+
+Center = bypass on all effects.
 
 ---
 
@@ -126,20 +158,6 @@ Pad mode: **PAD FX** — hold to apply, release to bypass
 
 ---
 
-## Color FX
-
-**CFX Super Knob (Shift held)** — wet/dry depth. Select FX type from the mixer panel dropdown above the DRUMS/FX row.
-
-Available: FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRIVE
-
----
-
-## EQ
-
-**Hold Shift + turn HI / MID / LOW** — 3-band EQ. Takes effect immediately. Full left = kill. Full right = +10 dB. Current values shown in the mixer panel EQ column.
-
----
-
 ## Jog Wheel
 
 | Action | Result |
@@ -180,15 +198,9 @@ Key display turns amber when shifted.
 
 ---
 
-## Headphone Mix
-
-**Master headphone volume** knob adjusts the monitor level.
-
----
-
 ## Loudness Normalisation
 
-The **NORM** button on each deck panel applies EBU R128 gain so tracks hit a consistent level. Toggle per deck. Shown as `NORM +X.X dB` when active.
+The **NORM** button on each deck panel applies EBU R128 gain so tracks hit a consistent level. Toggle per deck.
 
 ---
 
@@ -202,7 +214,7 @@ The **NORM** button on each deck panel applies EBU R128 gain so tracks hit a con
 | ● | Orange | BPM only |
 | ○ | Grey | Not analysed |
 
-**⟳ Analyse All** — re-runs analysis and stem generation on every track. Shows live count and CPU% while running.
+**⟳ Analyse All** — re-runs analysis and stem generation on every track.
 
 **+ Add Folder** — clears the library and replaces it with a new folder scan.
 
@@ -224,7 +236,7 @@ Default mode on startup: BEAT LOOP.
 |------|----------|
 | `~/.udj/library.db` | Track database |
 | `~/.udj/events.db` | Sync/grid event log |
-| `~/udj_cache/<hash>/` | Stem WAV cache (vocals, drums, bass, other) |
+| `~/udj_cache/<hash>/` | Stem WAV cache |
 
 ---
 

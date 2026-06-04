@@ -45,8 +45,6 @@ class MainWindow(QMainWindow):
         # ── Status bar ────────────────────────────────────
         sb = self.statusBar()
         self._midi_status = QLabel("Controller: searching…")
-        self._analysis_status = QLabel("")
-        sb.addWidget(self._analysis_status)
         sb.addPermanentWidget(self._midi_status)
         QTimer.singleShot(500, self._check_midi)
 
@@ -86,6 +84,7 @@ class MainWindow(QMainWindow):
                                     self.engine.master_peak[1]),
             deck_peak_fns=[lambda: self.engine.vu_peak[0],
                            lambda: self.engine.vu_peak[1]])
+
 
         top.addWidget(self.deck1_widget, 2)
         top.addWidget(self.mixer_widget, 0)
@@ -250,19 +249,12 @@ class MainWindow(QMainWindow):
         total          = total_analysis + total_stems
 
         if not total:
-            self._analysis_status.setText("")
             if on_complete:
                 on_complete()
             return
 
         done = [0]
 
-        def _set_status(text, color="#ffaa00"):
-            QTimer.singleShot(0, lambda: (
-                self._analysis_status.setStyleSheet(f"color:{color};"),
-                self._analysis_status.setText(text)))
-
-        _set_status(f"Analysing {total_analysis} tracks + {total_stems} stems…  0 / {total}")
         QTimer.singleShot(0, lambda: self.library.analysis_progress_start(total))
 
         def _on_analysis(meta):
@@ -278,9 +270,6 @@ class MainWindow(QMainWindow):
         def _check_done():
             if done[0] >= total:
                 def _finish():
-                    self._analysis_status.setStyleSheet("color:#00dd88;")
-                    self._analysis_status.setText(
-                        f"Analysis complete  ✓  {total_analysis} tracks · {total_stems} stems")
                     self.library._model.reload()
                     self.library.analysis_progress_done()
                     if on_complete:
@@ -289,7 +278,6 @@ class MainWindow(QMainWindow):
             else:
                 n = done[0]
                 def _upd(n=n):
-                    self._analysis_status.setText(f"Analysing…  {n} / {total}")
                     try:
                         self.library._btn_analyse.setText(f"⟳  {n} / {total}")
                         self.library.analysis_progress_update(n)

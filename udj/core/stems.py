@@ -21,11 +21,11 @@ import threading
 import numpy as np
 from typing import Callable, Optional
 
-STEM_NAMES = ["drums", "bass", "other", "vocals"]
+STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v5"   # htdemucs_ft, shifts=1, vocal HP/LP/gate -30dBFS
+STEMS_VERSION = "v6"   # htdemucs_6s (6 stems); DSP split of other→guitar+piano fallback
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -206,15 +206,22 @@ def _separate_demucs(file_path: str, target_sr: int,
         device = "cpu"
     print(f"[Stems] using device={device}")
 
-    # htdemucs_ft = fine-tuned hybrid transformer — best available open-source model.
-    # Serato DJ Pro uses the same demucs technology; ft model is the equivalent of
-    # their quality tier. Falls back to htdemucs if ft is not cached.
+    # Model priority: 6s (guitar+piano) → ft (fine-tuned 4-stem) → htdemucs (standard 4-stem)
+    # htdemucs_6s: drums, bass, other, vocals, guitar, piano — broadest stem palette
+    # Falls back to 4-stem models; guitar+piano are then derived via DSP split of "other"
+    model_name = "htdemucs_6s"
     try:
-        model = get_model("htdemucs_ft")
-        print("[Stems] using htdemucs_ft (fine-tuned, Serato-grade quality)")
+        model = get_model("htdemucs_6s")
+        print("[Stems] using htdemucs_6s (6-stem: guitar+piano separated)")
     except Exception:
-        model = get_model("htdemucs")
-        print("[Stems] using htdemucs (standard quality)")
+        try:
+            model = get_model("htdemucs_ft")
+            model_name = "htdemucs_ft"
+            print("[Stems] htdemucs_6s unavailable — using htdemucs_ft (4-stem)")
+        except Exception:
+            model = get_model("htdemucs")
+            model_name = "htdemucs"
+            print("[Stems] using htdemucs (standard 4-stem)")
     model.eval()
 
     wav, sr = torchaudio.load(file_path)
@@ -239,7 +246,7 @@ def _separate_demucs(file_path: str, target_sr: int,
             progress=False,
         )[0]   # (num_stems, 2, N)
 
-    stem_names = model.sources
+    stem_names = model.sources   # e.g. ["drums","bass","other","vocals"] or +["guitar","piano"]
     raw_stems: dict[str, np.ndarray] = {}
     for i, name in enumerate(stem_names):
         stem_wav = sources[i]
@@ -263,6 +270,12 @@ def _separate_demucs(file_path: str, target_sr: int,
     n = min(len(orig), min(len(v) for v in raw_stems.values()))
     orig = orig[:n]
     raw_stems = {k: v[:n] for k, v in raw_stems.items()}
+
+    # If model only gave 4 stems, derive guitar+piano from "other" via DSP
+    if "guitar" not in raw_stems and "other" in raw_stems:
+        raw_stems["guitar"], raw_stems["piano"] = _split_other_to_guitar_piano(
+            raw_stems["other"], target_sr)
+        print("[Stems] guitar+piano derived via DSP split of 'other'")
 
     # Post-process each stem, then calibrate levels
     processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
@@ -295,6 +308,10 @@ def _post_process_stems(raw: dict[str, np.ndarray], sr: int,
         result["other"] = _process_other(raw["other"], sr)
     if "vocals" in raw:
         result["vocals"] = _process_vocals(raw["vocals"], sr)
+    if "guitar" in raw:
+        result["guitar"] = _process_guitar(raw["guitar"], sr)
+    if "piano" in raw:
+        result["piano"]  = _process_piano(raw["piano"],  sr)
 
     # Level calibration: scale each stem so their RMS sum matches the original
     result = _calibrate_levels(result, orig)
@@ -309,49 +326,47 @@ def _rms(a: np.ndarray) -> float:
 def _process_drums(audio: np.ndarray, sr: int,
                    bpm: float, energy: int) -> np.ndarray:
     """
-    Drums post-processing for electronic/techno material:
-    - Roll off extreme sub-bass < 30 Hz (demucs sub-bass leakage artifact)
-    - Transient restore: parallel upward compression on attack envelopes
-    - Hi-hat air boost: gentle high-shelf +1.5 dB above 12 kHz
-    - De-mud: gentle dip in the 250-400 Hz range (boxiness from bleed)
+    Drums post-processing tuned for Detroit techno / electronic music:
+    - HP at 30 Hz only (preserve kick sub-body at 50-80 Hz — not 60 Hz)
+    - Aggressive transient restore for industrial kick punch
+    - Hi-hat air shelf +2 dB above 10 kHz (more sparkle for techno hats)
+    - De-mud: −3 dB around 300 Hz (boxy bleed, heavier cut for techno clarity)
     """
     from scipy.signal import sosfilt, butter
     nyq = sr / 2
 
     audio64 = audio.astype(np.float64)
 
-    # 1. Remove sub-bass bleed below 60 Hz (kick has body at 60-200 Hz, sub below is bass bleed)
-    sos_hp = butter(4, 60.0 / nyq, "high", output="sos")
+    # 1. Remove only DC/rumble below 30 Hz (keep kick sub-body at 50-80 Hz)
+    sos_hp = butter(4, 30.0 / nyq, "high", output="sos")
     audio64 = np.stack([
         sosfilt(sos_hp, audio64[:, 0]),
         sosfilt(sos_hp, audio64[:, 1]),
     ], axis=1)
 
-    # 2. Transient restoration — parallel compression blend
-    # Fast attack envelope (1 ms) captures transients; slow (50ms) = sustain
-    # Boosting transient ratio restores kick punch demucs softened
-    kick_boost = 1.0 + (energy / 10.0) * 0.35   # 0–35% punch boost by energy
+    # 2. Transient restoration — more aggressive for techno punch
+    kick_boost = 1.25 + (energy / 10.0) * 0.4   # baseline 25% + up to 40% by energy
     audio64 = _transient_enhance(audio64, sr,
-                                 attack_ms=1.5, release_ms=50.0,
+                                 attack_ms=1.0, release_ms=40.0,
                                  boost=kick_boost)
 
-    # 3. Hi-hat air shelf +1.5 dB above 12 kHz
-    sos_air = butter(1, 12000.0 / nyq, "high", output="sos")
+    # 3. Hi-hat air shelf +2 dB above 10 kHz (techno hats need more presence)
+    sos_air = butter(1, 10000.0 / nyq, "high", output="sos")
     air = np.stack([
         sosfilt(sos_air, audio64[:, 0]),
         sosfilt(sos_air, audio64[:, 1]),
     ], axis=1)
-    air_gain = 10.0 ** (1.5 / 20.0) - 1.0   # additive: total = dry + gain*shelf
+    air_gain = 10.0 ** (2.0 / 20.0) - 1.0
     audio64 = audio64 + air * air_gain
 
-    # 4. De-mud: −2 dB shelve around 300 Hz (boxy low-mid from bleed)
+    # 4. De-mud: −3 dB at 250–400 Hz (heavier cut — techno kicks need tight low-mids)
     sos_mud_hp = butter(2, 200.0 / nyq, "high", output="sos")
     sos_mud_lp = butter(2, 500.0 / nyq, "low",  output="sos")
     mud_L = sosfilt(sos_mud_hp, audio64[:, 0])
     mud_L = sosfilt(sos_mud_lp, mud_L)
     mud_R = sosfilt(sos_mud_hp, audio64[:, 1])
     mud_R = sosfilt(sos_mud_lp, mud_R)
-    mud_gain = 10.0 ** (-2.0 / 20.0) - 1.0
+    mud_gain = 10.0 ** (-3.0 / 20.0) - 1.0
     audio64[:, 0] += mud_L * mud_gain
     audio64[:, 1] += mud_R * mud_gain
 
@@ -392,31 +407,31 @@ def _transient_enhance(audio: np.ndarray, sr: int,
 
 def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
     """
-    Bass post-processing:
-    - High-cut above 300 Hz to tightly remove drum and synth bleed
+    Bass post-processing tuned for Detroit techno / 303 acid bass:
+    - High-cut at 1200 Hz (not 300 Hz) — 303 squeal/resonance lives at 400-1000 Hz
     - Sub-bass mono-sum below 120 Hz (professional mastering practice)
-    - Gentle sub boost +2 dB below 60 Hz for punch (compensate for demucs energy loss)
+    - Sub boost +3 dB below 60 Hz for Detroit kick-bass punch
     """
     from scipy.signal import sosfilt, butter
     nyq = sr / 2
 
     audio64 = audio.astype(np.float64)
 
-    # 1. High-cut: remove bleed above 300 Hz (tighter than 400 Hz — less synth bleed)
-    sos_lp = butter(8, min(300.0 / nyq, 0.99), "low", output="sos")
+    # 1. High-cut at 1200 Hz — allows 303 acid squeal/resonance through (400-1000 Hz)
+    sos_lp = butter(6, min(1200.0 / nyq, 0.99), "low", output="sos")
     audio64 = np.stack([
         sosfilt(sos_lp, audio64[:, 0]),
         sosfilt(sos_lp, audio64[:, 1]),
     ], axis=1)
 
-    # 2. Sub-bass boost +2 dB below 60 Hz (recovers energy demucs attenuates)
+    # 2. Sub-bass boost +3 dB below 60 Hz (Detroit bass needs sub weight)
     sos_sub_lp = butter(2, min(60.0 / nyq, 0.99), "low",  output="sos")
     sos_sub_hp = butter(2, 20.0 / nyq,             "high", output="sos")
     sub_L = sosfilt(sos_sub_lp, audio64[:, 0])
     sub_L = sosfilt(sos_sub_hp, sub_L)
     sub_R = sosfilt(sos_sub_lp, audio64[:, 1])
     sub_R = sosfilt(sos_sub_hp, sub_R)
-    sub_gain = 10.0 ** (2.0 / 20.0) - 1.0
+    sub_gain = 10.0 ** (3.0 / 20.0) - 1.0
     audio64[:, 0] += sub_L * sub_gain
     audio64[:, 1] += sub_R * sub_gain
 
@@ -515,6 +530,75 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64[:, 1] *= gate
 
     return audio64.astype(np.float32)
+
+
+def _split_other_to_guitar_piano(other: np.ndarray, sr: int
+                                  ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    DSP split of the 'other' stem into guitar-like and piano-like components.
+    Guitar/Lead:  brighter, more transient-heavy (HP 1500 Hz) — lead synths, stabs
+    Piano/Pad:    lower harmonic content  (LP 1500 Hz) — pads, chords, sub-textures
+    Crossover at 1500 Hz chosen for techno/dance (lead synths live above, pads below).
+    """
+    from scipy.signal import sosfilt, butter
+    nyq = sr / 2
+    xover = min(1500.0 / nyq, 0.99)
+
+    sos_hp = butter(4, xover, "high", output="sos")
+    sos_lp = butter(4, xover, "low",  output="sos")
+
+    a64 = other.astype(np.float64)
+    guitar = np.stack([sosfilt(sos_hp, a64[:, 0]),
+                       sosfilt(sos_hp, a64[:, 1])], axis=1).astype(np.float32)
+    piano  = np.stack([sosfilt(sos_lp, a64[:, 0]),
+                       sosfilt(sos_lp, a64[:, 1])], axis=1).astype(np.float32)
+    return guitar, piano
+
+
+def _process_guitar(audio: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Guitar: HP 80 Hz (remove bass/kick bleed), presence boost +2 dB at 2–5 kHz.
+    """
+    from scipy.signal import sosfilt, butter
+    nyq = sr / 2
+    a64 = audio.astype(np.float64)
+
+    sos_hp = butter(4, 80.0 / nyq, "high", output="sos")
+    a64 = np.stack([sosfilt(sos_hp, a64[:, 0]),
+                    sosfilt(sos_hp, a64[:, 1])], axis=1)
+
+    sos_pres_hp = butter(2, 2000.0 / nyq, "high", output="sos")
+    sos_pres_lp = butter(2, min(5000.0 / nyq, 0.99), "low", output="sos")
+    pres_L = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, a64[:, 0]))
+    pres_R = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, a64[:, 1]))
+    pres_gain = 10.0 ** (2.0 / 20.0) - 1.0
+    a64[:, 0] += pres_L * pres_gain
+    a64[:, 1] += pres_R * pres_gain
+
+    return a64.astype(np.float32)
+
+
+def _process_piano(audio: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Piano/chords: HP 60 Hz (remove sub-bass bleed), gentle warmth boost +1.5 dB at 200–800 Hz.
+    """
+    from scipy.signal import sosfilt, butter
+    nyq = sr / 2
+    a64 = audio.astype(np.float64)
+
+    sos_hp = butter(4, 60.0 / nyq, "high", output="sos")
+    a64 = np.stack([sosfilt(sos_hp, a64[:, 0]),
+                    sosfilt(sos_hp, a64[:, 1])], axis=1)
+
+    sos_w_hp = butter(2, 200.0 / nyq, "high", output="sos")
+    sos_w_lp = butter(2, min(800.0 / nyq, 0.99), "low", output="sos")
+    w_L = sosfilt(sos_w_lp, sosfilt(sos_w_hp, a64[:, 0]))
+    w_R = sosfilt(sos_w_lp, sosfilt(sos_w_hp, a64[:, 1]))
+    warm_gain = 10.0 ** (1.5 / 20.0) - 1.0
+    a64[:, 0] += w_L * warm_gain
+    a64[:, 1] += w_R * warm_gain
+
+    return a64.astype(np.float32)
 
 
 def _detect_vocal_presence(vocals: np.ndarray, orig: np.ndarray) -> bool:

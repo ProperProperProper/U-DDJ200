@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import operator
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                              QDial, QPushButton, QFrame, QSizePolicy,
+                              QDial, QSlider, QPushButton, QFrame, QSizePolicy,
                               QComboBox)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui  import QPainter, QColor
@@ -44,6 +44,13 @@ def _sep() -> QFrame:
     f.setFixedHeight(1)
     return f
 
+def _sep_v() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.VLine)
+    f.setStyleSheet("color:#1e1e28;")
+    f.setFixedWidth(1)
+    return f
+
 
 def _db(gain: float) -> str:
     if gain < 1e-4:
@@ -62,10 +69,11 @@ class MixerWidget(QWidget):
         self._master_peak_fn = master_peak_fn
         self._deck_peak_fns  = deck_peak_fns or []
 
-        self._stem_knobs: list = [[], []]   # [ch][stem_idx] → QDial
-        self._eq_knobs:   list = [[], []]   # [ch][band_idx 0=hi,1=mid,2=lo] → QDial
-        self._fx_knobs:   list = []         # [ch] → QDial (shift+knob = CFX)
-        self._pfl_btns:   list = []
+        self._stem_knobs:   list = [[], []]   # [ch][blend_idx 0-1] → QDial
+        self._stems_lbl:    list = [None, None]  # [ch] → QLabel loading indicator
+        self._eq_knobs:     list = [[], []]   # [ch][band_idx 0=hi,1=mid,2=lo] → QDial
+        self._fx_knobs:     list = []         # [ch] → QDial (shift+knob = CFX)
+        self._pfl_btns:     list = []
 
         self._build_ui()
 
@@ -81,41 +89,58 @@ class MixerWidget(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(4)
 
-        # ── 8 knobs per deck: stem + EQ side by side, 4 rows ──
-        # Each row = one physical hardware knob:
-        #   normal    → stem volume
-        #   Shift held → EQ band / color FX
-        #
-        # Row 1: VOX  stem | HI  EQ     (HI knob)
-        # Row 2: OTHER stem | MID EQ     (MID knob)
-        # Row 3: BASS  stem | LOW EQ     (LOW knob)
-        # Row 4: DRUMS stem | FX depth   (CFX knob)
-        #
-        _ROWS = [
-            # (stem_label, stem_color, stem_name, eq_label, eq_color, eq_band_or_fx)
-            ("VOX",   "#aa44ff", "vocals", "HI",  "#00c8ff", "high"),
-            ("OTHER", "#44aaff", "other",  "MID", "#44cc88", "mid"),
-            ("BASS",  "#ff9900", "bass",   "LOW", "#ff7733", "low"),
-            ("DRUMS", "#ff4466", "drums",  "FX",  "#bb88ff", "fx"),
+        # 3 blend knobs (one per stem pair) + 3 EQ knobs (HI/MID/LOW) + 1 FX knob
+        # Each blend knob: hard left = kill left stem, center = both full,
+        #                  hard right = kill right stem
+        # Row 1: VOC←→DRM blend | HI EQ
+        # Row 2: BSS←→OTH blend | MID EQ
+        # Row 3: LEAD←→PAD blend | LOW EQ
+        # Row 4: FX only
+
+        _BLEND_ROWS = [
+            # (blend_label, left_color, right_color, pair_idx, eq_label, eq_color, eq_band)
+            ("VOC ←→ DRM",  "#aa44ff", "#ff4466", 0, "HI",  "#00c8ff", "high"),
+            ("BSS ←→ OTH",  "#ff9900", "#44aaff", 1, "MID", "#44cc88", "mid"),
+            ("LEAD ←→ PAD", "#44ff88", "#ff88cc", 2, "LOW", "#ff7733", "low"),
+        ]
+        _EQ_ONLY_ROWS = [
+            ("FX", "#bb88ff", "fx"),
         ]
 
         self._stem_knobs = [[], []]
         self._eq_knobs   = [[], []]   # indices 0..2 = HI/MID/LOW, index 3 = FX depth
-        self._fx_knobs   = []         # same object as _eq_knobs[ch][3] for compat
+        self._fx_knobs   = []
         self._fx_combos  = []
 
-        # Column header: CH1 left pair | spacer | CH2 right pair
+        # Column header
         hdr = QHBoxLayout()
         hdr.addStretch(1)
-        hdr.addWidget(_lbl("STEM", "#555", 7))
+        hdr.addWidget(_lbl("BLEND", "#555", 7))
         hdr.addWidget(_lbl("EQ", "#555", 7))
         hdr.addStretch(2)
-        hdr.addWidget(_lbl("STEM", "#555", 7))
+        hdr.addWidget(_lbl("BLEND", "#555", 7))
         hdr.addWidget(_lbl("EQ", "#555", 7))
         hdr.addStretch(1)
         root.addLayout(hdr)
 
-        # FX type selectors (one per channel, shown above the FX row)
+        # Stems status row — one indicator per channel, always visible, changes state
+        stems_row = QHBoxLayout()
+        stems_row.addStretch(1)
+        for ch in range(2):
+            lbl = QLabel("● STEMS READY")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(
+                "color:#00ff88;font-size:9px;font-weight:bold;"
+                "background:#001a0d;border:1px solid #00ff88;"
+                "border-radius:4px;padding:2px 6px;")
+            self._stems_lbl[ch] = lbl
+            stems_row.addWidget(lbl)
+            if ch == 0:
+                stems_row.addStretch(2)
+        stems_row.addStretch(1)
+        root.addLayout(stems_row)
+
+        # FX type selectors
         fx_combo_row = QHBoxLayout()
         fx_combo_row.addStretch(1)
         for ch in range(2):
@@ -138,28 +163,61 @@ class MixerWidget(QWidget):
         fx_combo_row.addStretch(1)
         root.addLayout(fx_combo_row)
 
-        for row_idx, (sl, sc, sn, el, ec, eb) in enumerate(_ROWS):
+        # Blend + EQ rows — both use QDial, same style as EQ knobs
+        for bl, lc, rc, pair_idx, el, ec, eb in _BLEND_ROWS:
+            left_name, right_name = bl.split(" ←→ ")
             row = QHBoxLayout()
             row.setContentsMargins(0, 2, 0, 2)
             row.setSpacing(2)
             row.addStretch(1)
 
             for ch in range(2):
-                # Stem knob
+                # Blend dial
                 s_col = QVBoxLayout()
                 s_col.setSpacing(1)
                 s_col.setContentsMargins(0, 0, 0, 0)
                 s_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-                s_col.addWidget(_lbl(sl, sc, 8, True))
+                lbl_w = QLabel(
+                    f'<span style="color:{lc};font-weight:bold">{left_name}</span>'
+                    f'<span style="color:#888"> ←→ </span>'
+                    f'<span style="color:{rc};font-weight:bold">{right_name}</span>')
+                lbl_w.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                lbl_w.setStyleSheet("font-size:7px;")
+                s_col.addWidget(lbl_w)
                 sk = _knob(val=64, size=44)
                 sk.valueChanged.connect(
-                    lambda v, c=ch, stem=sn:
-                        self.engine and self.engine.deck(c).set_stem_volume(stem, v / 127.0))
+                    lambda v, c=ch, p=pair_idx:
+                        self.engine and self.engine.deck(c).set_stem_blend(p, v / 127.0))
                 s_col.addWidget(sk, alignment=Qt.AlignmentFlag.AlignHCenter)
                 row.addLayout(s_col)
                 self._stem_knobs[ch].append(sk)
 
-                # EQ / FX knob
+                # EQ dial
+                e_col = QVBoxLayout()
+                e_col.setSpacing(1)
+                e_col.setContentsMargins(0, 0, 0, 0)
+                e_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                e_col.addWidget(_lbl(el, ec, 8, True))
+                ek = _knob(val=64, size=44)
+                ek.valueChanged.connect(
+                    lambda v, c=ch, b=eb: self.mixer.set_eq_raw(c, b, v))
+                e_col.addWidget(ek, alignment=Qt.AlignmentFlag.AlignHCenter)
+                row.addLayout(e_col)
+                self._eq_knobs[ch].append(ek)
+
+                if ch == 0:
+                    row.addStretch(2)
+
+            row.addStretch(1)
+            root.addLayout(row)
+
+        # FX-only row
+        for eq_idx, (el, ec, eb) in enumerate(_EQ_ONLY_ROWS):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 2, 0, 2)
+            row.setSpacing(2)
+            row.addStretch(1)
+            for ch in range(2):
                 e_col = QVBoxLayout()
                 e_col.setSpacing(1)
                 e_col.setContentsMargins(0, 0, 0, 0)
@@ -175,10 +233,8 @@ class MixerWidget(QWidget):
                 e_col.addWidget(ek, alignment=Qt.AlignmentFlag.AlignHCenter)
                 row.addLayout(e_col)
                 self._eq_knobs[ch].append(ek)
-
                 if ch == 0:
                     row.addStretch(2)
-
             row.addStretch(1)
             root.addLayout(row)
 
@@ -275,6 +331,13 @@ class MixerWidget(QWidget):
 
     # ── handlers ──────────────────────────────────────────────
 
+    def reset_stem_knobs(self, ch: int):
+        """Reset all stem blend knobs to center when a track loads."""
+        for k in self._stem_knobs[ch]:
+            k.blockSignals(True)
+            k.setValue(64)
+            k.blockSignals(False)
+
     def _on_xf(self, pos: float):
         self.mixer.crossfader = pos
 
@@ -288,21 +351,39 @@ class MixerWidget(QWidget):
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
 
-        # Sync stem knobs from deck state (hardware may have moved them)
+        # Stems status + knob reset on track load (GUI thread — safe)
         if self.engine:
-            _STEM_BANDS = ["vocals", "other", "bass"]
             for ch in range(2):
                 deck = self.engine.deck(ch)
-                for i, stem in enumerate(_STEM_BANDS):
-                    vol = deck.stem_volumes.get(stem, 1.0)
-                    # Inverse of sqrt taper: raw = vol² × 0.5 × 127
-                    # vol≥1 → show center (64) — hardware knob at ≥center gives unity
-                    raw = 64 if vol >= 1.0 else int(vol ** 2 * 63.5)
-                    k = self._stem_knobs[ch][i]
-                    if abs(k.value() - raw) > 1:
-                        k.blockSignals(True)
-                        k.setValue(raw)
-                        k.blockSignals(False)
+                has_track = deck.audio is not None
+                stems_ready = deck.stems_ready
+                # Reset stem knobs to center when a fresh track has loaded (stems not yet ready)
+                if has_track and not stems_ready:
+                    for k in self._stem_knobs[ch]:
+                        if k.value() != 64:
+                            k.blockSignals(True)
+                            k.setValue(64)
+                            k.blockSignals(False)
+                lbl = self._stems_lbl[ch]
+                if lbl is not None:
+                    if not has_track:
+                        lbl.setText("○ NO TRACK")
+                        lbl.setStyleSheet(
+                            "color:#444;font-size:9px;font-weight:bold;"
+                            "background:#111;border:1px solid #333;"
+                            "border-radius:4px;padding:2px 6px;")
+                    elif not stems_ready:
+                        lbl.setText("◌ STEMS LOADING…")
+                        lbl.setStyleSheet(
+                            "color:#ffaa00;font-size:9px;font-weight:bold;"
+                            "background:#1a1200;border:1px solid #ffaa00;"
+                            "border-radius:4px;padding:2px 6px;")
+                    else:
+                        lbl.setText("● STEMS READY")
+                        lbl.setStyleSheet(
+                            "color:#00ff88;font-size:9px;font-weight:bold;"
+                            "background:#001a0d;border:1px solid #00ff88;"
+                            "border-radius:4px;padding:2px 6px;")
 
         # Sync EQ knobs (indices 0-2) and FX knob (index 3) from mixer state
         _EQ_BANDS = ["high", "mid", "low"]
