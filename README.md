@@ -2,7 +2,7 @@
 
 Professional DJ app for macOS. Pioneer DDJ-200 controller. AI stem separation. Rekordbox-style beat sync.
 
-<img width="1461" height="808" alt="U-DJ Screenshot" src="https://github.com/user-attachments/assets/28111f23-e412-40ec-8ac9-6d7eb598b065" />
+<img width="1467" height="830" alt="Screenshot 2026-06-04 at 8 57 39 PM" src="https://github.com/user-attachments/assets/6014058a-73c6-4ea5-8669-2a57d2bf9b49" />
 
 ---
 
