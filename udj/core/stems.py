@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v6"   # htdemucs_6s (6 stems); DSP split of other→guitar+piano fallback
+STEMS_VERSION = "v7"   # htdemucs_ft + DSP split other→lead/pad; overlap=0.25 (faster)
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -206,22 +206,16 @@ def _separate_demucs(file_path: str, target_sr: int,
         device = "cpu"
     print(f"[Stems] using device={device}")
 
-    # Model priority: 6s (guitar+piano) → ft (fine-tuned 4-stem) → htdemucs (standard 4-stem)
-    # htdemucs_6s: drums, bass, other, vocals, guitar, piano — broadest stem palette
-    # Falls back to 4-stem models; guitar+piano are then derived via DSP split of "other"
-    model_name = "htdemucs_6s"
+    # htdemucs_ft: fine-tuned 4-stem (drums, bass, other, vocals) — fastest quality model.
+    # guitar+piano are DSP-derived from "other" after separation (see _split_other_to_guitar_piano).
+    # htdemucs_6s is slower (6 output heads) with minimal quality gain for electronic music
+    # where "guitar" and "piano" are synths anyway.
     try:
-        model = get_model("htdemucs_6s")
-        print("[Stems] using htdemucs_6s (6-stem: guitar+piano separated)")
+        model = get_model("htdemucs_ft")
+        print("[Stems] using htdemucs_ft (fine-tuned 4-stem)")
     except Exception:
-        try:
-            model = get_model("htdemucs_ft")
-            model_name = "htdemucs_ft"
-            print("[Stems] htdemucs_6s unavailable — using htdemucs_ft (4-stem)")
-        except Exception:
-            model = get_model("htdemucs")
-            model_name = "htdemucs"
-            print("[Stems] using htdemucs (standard 4-stem)")
+        model = get_model("htdemucs")
+        print("[Stems] using htdemucs (standard 4-stem)")
     model.eval()
 
     wav, sr = torchaudio.load(file_path)
@@ -233,16 +227,15 @@ def _separate_demucs(file_path: str, target_sr: int,
     if sr != model_sr:
         wav = torchaudio.functional.resample(wav, sr, model_sr)
 
-    # shifts=1: single run — htdemucs_ft is already fine-tuned so the quality
-    # benefit of shifts=2/4 is marginal (measured 192s vs 437s on MPS for a
-    # 7-minute track). overlap=0.5 still eliminates chunk-boundary artifacts.
+    # shifts=1, overlap=0.25 (demucs default) — fastest settings that still sound clean.
+    # overlap=0.5 was 2× slower with no audible benefit on MPS.
     with torch.no_grad():
         sources = apply_model(
             model,
             wav.unsqueeze(0),
             device=device,
             shifts=1,
-            overlap=0.5,
+            overlap=0.25,
             progress=False,
         )[0]   # (num_stems, 2, N)
 
