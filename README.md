@@ -253,47 +253,143 @@ Per-channel status in the mixer panel:
 
 ## Build from Source
 
-### Requirements
+These instructions cover everything from a clean macOS machine to a running `.app` bundle.
 
-- macOS (Apple Silicon recommended — MPS acceleration makes stem separation 5–10× faster)
-- Python 3.9+
-- Pioneer DDJ-200 (optional — app runs fine with keyboard/mouse)
+---
 
-### Dependencies
+### 1. System requirements
+
+| | Minimum | Recommended |
+|---|---|---|
+| **OS** | macOS 12 Monterey | macOS 13+ |
+| **Chip** | Intel x86_64 | Apple Silicon (M1/M2/M3) — MPS makes stem separation 5–10× faster |
+| **Python** | 3.9 | 3.9 (tested — 3.10+ untested) |
+| **Disk** | 2 GB free | 5 GB (models + stem cache) |
+| **RAM** | 8 GB | 16 GB |
+| **Controller** | — | Pioneer DDJ-200 (USB) |
+
+---
+
+### 2. Install Python 3.9
+
+Check if you already have it:
 
 ```bash
-pip install PyQt6 sounddevice soundfile scipy numpy librosa pyloudnorm demucs torch torchaudio rtmidi pyinstaller
+python3 --version
 ```
 
-Or if you have a `requirements.txt`:
+If not, install via [python.org](https://www.python.org/downloads/) or Homebrew:
 
 ```bash
-pip install -r requirements.txt
+brew install python@3.9
 ```
 
-### Clone and run directly
+Make sure `python3` resolves to 3.9:
+
+```bash
+python3.9 --version   # should print Python 3.9.x
+```
+
+---
+
+### 3. Clone the repo
 
 ```bash
 git clone https://github.com/PahtrikProper/U-DJ.git
 cd U-DJ
+```
+
+---
+
+### 4. Install Python dependencies
+
+Install the core requirements first:
+
+```bash
+pip3 install -r requirements.txt
+```
+
+Then install the ML stack. **Apple Silicon (M1/M2/M3):**
+
+```bash
+pip3 install torch==2.8.0 torchaudio==2.8.0
+pip3 install demucs==4.0.1
+pip3 install pyloudnorm
+```
+
+**Intel Mac:**
+
+```bash
+pip3 install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip3 install demucs pyloudnorm
+```
+
+Install PyInstaller for building the `.app`:
+
+```bash
+pip3 install pyinstaller==6.20.0
+```
+
+Verify everything loaded:
+
+```bash
+python3 -c "import torch, torchaudio, demucs, sounddevice, PyQt6; print('All good')"
+```
+
+---
+
+### 5. Run directly (no build needed)
+
+```bash
 python3 main.py
 ```
 
-### Build the .app bundle
+This is the fastest way to test changes. The app runs identically to the built `.app`.
+
+---
+
+### 6. Build the .app bundle
 
 ```bash
-cd U-DJ
 python3 -m PyInstaller udj.spec --clean -y
 rm -rf ~/Desktop/U-DJ.app
 cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
 open ~/Desktop/U-DJ.app
 ```
 
-The built app is fully self-contained — no Python install needed to run it.
+The build takes 60–90 seconds. The resulting `.app` is fully self-contained — no Python install needed to run it on another Mac of the same architecture.
 
-### First launch notes
+> **Note:** The `.app` built on Apple Silicon will not run on Intel Macs and vice versa. Build on the target architecture.
 
-- On first launch macOS may ask to allow audio and MIDI access — approve both
-- The first track you load will trigger a one-time download of the demucs ML model (~50 MB)
-- After that, stems are cached locally and load instantly on repeat plays
-- Library database is stored at `~/.udj/library.db` and persists across builds
+---
+
+### 7. First launch
+
+1. macOS will ask for **Microphone access** (required for audio output — approve it)
+2. If a DDJ-200 is connected, it will be detected automatically — no driver install needed
+3. Click **+ Add Folder** and point it at your music directory
+4. Tracks start analysing immediately in the background
+5. Load a track onto a deck — the first stem separation triggers a one-time **~50 MB model download** (demucs htdemucs_ft). Subsequent loads are instant from cache
+
+---
+
+### 8. Rebuilding after code changes
+
+Always do a full clean build — incremental builds can silently include stale files:
+
+```bash
+python3 -m PyInstaller udj.spec --clean -y
+rm -rf ~/Desktop/U-DJ.app
+cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
+```
+
+---
+
+### 9. File locations
+
+| Path | Contents |
+|------|----------|
+| `~/.udj/library.db` | Track database (BPM, key, beat grid, cues) |
+| `~/.udj/events.db` | Sync/quantise event log |
+| `~/udj_cache/<hash>/` | Stem WAV cache — delete to force re-separation |
+| `~/.cache/torch/hub/checkpoints/` | Demucs model weights |
