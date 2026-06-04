@@ -253,10 +253,47 @@ Per-channel status in the mixer panel:
 
 ## Build from Source
 
+### Requirements
+
+- macOS (Apple Silicon recommended — MPS acceleration makes stem separation 5–10× faster)
+- Python 3.9+
+- Pioneer DDJ-200 (optional — app runs fine with keyboard/mouse)
+
+### Dependencies
+
 ```bash
-cd ~/Desktop/U-DJ
+pip install PyQt6 sounddevice soundfile scipy numpy librosa pyloudnorm demucs torch torchaudio rtmidi pyinstaller
+```
+
+Or if you have a `requirements.txt`:
+
+```bash
 pip install -r requirements.txt
+```
+
+### Clone and run directly
+
+```bash
+git clone https://github.com/PahtrikProper/U-DJ.git
+cd U-DJ
+python3 main.py
+```
+
+### Build the .app bundle
+
+```bash
+cd U-DJ
 python3 -m PyInstaller udj.spec --clean -y
 rm -rf ~/Desktop/U-DJ.app
 cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
+open ~/Desktop/U-DJ.app
 ```
+
+The built app is fully self-contained — no Python install needed to run it.
+
+### First launch notes
+
+- On first launch macOS may ask to allow audio and MIDI access — approve both
+- The first track you load will trigger a one-time download of the demucs ML model (~50 MB)
+- After that, stems are cached locally and load instantly on repeat plays
+- Library database is stored at `~/.udj/library.db` and persists across builds
