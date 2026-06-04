@@ -351,19 +351,30 @@ class MixerWidget(QWidget):
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
 
-        # Stems status + knob reset on track load (GUI thread — safe)
+        # Stems: tick-sync knobs from deck state — identical pattern to EQ knobs
         if self.engine:
+            from ..core.deck import Deck
             for ch in range(2):
                 deck = self.engine.deck(ch)
                 has_track = deck.audio is not None
                 stems_ready = deck.stems_ready
-                # Reset stem knobs to center when a fresh track has loaded (stems not yet ready)
-                if has_track and not stems_ready:
-                    for k in self._stem_knobs[ch]:
-                        if k.value() != 64:
-                            k.blockSignals(True)
-                            k.setValue(64)
-                            k.blockSignals(False)
+
+                for pair_idx, (stem_a, stem_b) in enumerate(Deck.STEM_PAIRS):
+                    vol_a = deck.stem_volumes.get(stem_a, 1.0)
+                    vol_b = deck.stem_volumes.get(stem_b, 1.0)
+                    if vol_a < 1.0:
+                        raw = int(vol_a * 0.5 * 127)
+                    elif vol_b < 1.0:
+                        raw = int((1.0 - vol_b * 0.5) * 127)
+                    else:
+                        raw = 64
+                    raw = max(0, min(127, raw))
+                    k = self._stem_knobs[ch][pair_idx]
+                    if abs(k.value() - raw) > 1:
+                        k.blockSignals(True)
+                        k.setValue(raw)
+                        k.blockSignals(False)
+
                 lbl = self._stems_lbl[ch]
                 if lbl is not None:
                     if not has_track:

@@ -74,11 +74,12 @@ CC_RATE_LSB  = 0x20
 CC_JOG_SIDE  = 0x21
 CC_JOG_SCR   = 0x22
 CC_SEEK      = 0x29
+CC_TRIM      = 0x27   # channel trim/gain knob — absorbed, not used
 CC_VOL_MSB   = 0x13
 CC_VOL_LSB   = 0x33
-CC_EQ_HI     = 0x07
-CC_EQ_MID    = 0x0B
-CC_EQ_LOW    = 0x0F
+CC_EQ_HI     = 0x07   # → stem blend pair 0 (VOC↔DRM)
+CC_EQ_MID    = 0x0B   # → stem blend pair 1 (BSS↔OTH)
+CC_EQ_LOW    = 0x0F   # → stem blend pair 2 (LEAD↔PAD)
 CC_CFX       = [0x17, 0x18]   # Color FX (Super Knob) — channel 0xB6, confirmed from Mixxx DDJ-200 mapping
 CC_XF_MSB    = 0x1F
 CC_XF_LSB    = 0x3F
@@ -307,29 +308,28 @@ class DDJ200:
                     raw = (self._vol_msb[d] << 7) | val
                     self.engine.mixer.set_volume_raw(d, raw)
                     return
+                if note == CC_TRIM:
+                    return   # trim/gain knob — absorbed
                 if note == CC_EQ_HI:
                     if self._shift[d]:
                         if self._eq_apply(d, 0, val):
                             self.engine.mixer.set_eq_raw(d, "high", val)
                     else:
-                        # HI  = vocals  (high frequency content — voice lives here)
-                        self.engine.deck(d).set_stem_volume("vocals", val / 127.0)
+                        self.engine.deck(d).set_stem_blend(0, val / 127.0)
                     return
                 if note == CC_EQ_MID:
                     if self._shift[d]:
                         if self._eq_apply(d, 1, val):
                             self.engine.mixer.set_eq_raw(d, "mid", val)
                     else:
-                        # MID = other/melody (synths, pads — midrange content)
-                        self.engine.deck(d).set_stem_volume("other", val / 127.0)
+                        self.engine.deck(d).set_stem_blend(1, val / 127.0)
                     return
                 if note == CC_EQ_LOW:
                     if self._shift[d]:
                         if self._eq_apply(d, 2, val):
                             self.engine.mixer.set_eq_raw(d, "low", val)
                     else:
-                        # LOW = bass only
-                        self.engine.deck(d).set_stem_volume("bass", val / 127.0)
+                        self.engine.deck(d).set_stem_blend(2, val / 127.0)
                     return
                 if note == CC_JOG_SIDE and not self._jog_touch[d]:
                     delta = val if val < 64 else val - 128
@@ -365,16 +365,10 @@ class DDJ200:
                 self.engine.mixer.set_crossfader_raw(raw)
                 return
             if note == CC_CFX[0]:
-                if self._shift[0]:
-                    self.engine.mixer.set_fx_raw(0, val)   # Shift+CFX = color FX
-                else:
-                    self.engine.deck(0).set_stem_volume("drums", val / 127.0)
+                self.engine.mixer.set_fx_raw(0, val)   # CFX = color FX depth
                 return
             if note == CC_CFX[1]:
-                if self._shift[1]:
-                    self.engine.mixer.set_fx_raw(1, val)   # Shift+CFX = color FX
-                else:
-                    self.engine.deck(1).set_stem_volume("drums", val / 127.0)
+                self.engine.mixer.set_fx_raw(1, val)
                 return
 
         # ── Performance pads — mode-aware ─────────────────────
