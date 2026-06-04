@@ -248,13 +248,12 @@ class DDJ200:
                         self._loop_recording[d] = False
                         self._send(CH[d], NOTE_SYNC, LED_OFF)
                         return
-                    # If this deck is already MASTER, re-snap the slave immediately
-                    if deck.sync_master:
-                        slave_idx = 1 - d
-                        self.engine.snap_sync(slave_idx)
-                        print(f"[Sync] master D{d+1} re-snapped slave D{slave_idx+1}")
+                    # Already follower → re-snap to master immediately
+                    if deck.sync_follower:
+                        self.engine.snap_sync(d)
+                        print(f"[Sync] D{d+1} re-snapped to master")
                         return
-                    # Otherwise: THIS deck becomes FOLLOWER, other deck is master
+                    # Otherwise: make this deck the follower, other deck the master
                     self._sync_as_follower(d)
                     return
 
@@ -474,42 +473,36 @@ class DDJ200:
 
     def _sync_as_follower(self, d: int):
         """
-        SYNC behavior: pressing SYNC on deck d makes it MASTER.
-        The other deck becomes the follower and snaps to match.
-        If the other deck has no audio/BPM, this deck is just marked master.
+        Press SYNC on deck d → deck d becomes FOLLOWER, other deck is MASTER.
+        Deck d snaps its beat phase to the master immediately.
+        If the other deck has no audio/BPM, deck d is just armed as follower
+        and will snap when the other deck loads.
         """
         other = self.engine.deck(1 - d)
         this  = self.engine.deck(d)
 
-        if this.bpm <= 0 or this.audio is None:
-            print(f"[Sync] deck {d} has no BPM — cannot set as master")
-            return
+        # This deck = FOLLOWER, other deck = MASTER
+        this.sync_follower  = True
+        this.sync_master    = False
+        other.sync_master   = True
+        other.sync_follower = False
 
-        # This deck = MASTER, other deck = FOLLOWER
-        this.sync_master    = True
-        this.sync_follower  = False
-        other.sync_follower = True
-        other.sync_master   = False
+        sr = other.sample_rate
+        m_pos_sec = other.position / max(sr, 1)
+        print(f"[SYNC] D{d+1}=FOLLOWER  D{2-d}=MASTER"
+              f"  master_pos={m_pos_sec:.3f}s  master_bpm={other.bpm*other.rate:.2f}"
+              f"  follower_bpm={this.bpm:.2f}")
 
-        sr = this.sample_rate
-        m_pos_sec = this.position / max(sr, 1)
-        from ..core.engine import bar_distance
-        bar_len = sr * 60.0 / max(this.bpm * this.rate, 1) * 4
-        m_phase = bar_distance(this.position, None, this.first_beat, bar_len / 4 * 4)
-        print(f"[MASTER SWITCH] D{d+1}=MASTER  D{2-d}=FOLLOWER"
-              f"  master_pos={m_pos_sec:.3f}s  master_bpm={this.bpm*this.rate:.2f}"
-              f"  bar_phase={m_phase:.3f}"
-              f"  follower_bpm={other.bpm:.2f}  follower_pos={other.position/max(sr,1):.3f}s")
-
-        # Snap the follower (other deck) to this master
-        self.engine.snap_sync(1 - d)
+        # Snap THIS deck (follower) to the master now
+        if other.audio is not None and other.bpm > 0 and this.audio is not None and this.bpm > 0:
+            self.engine.snap_sync(d)
 
         self._synced[d]     = True
         self._synced[1 - d] = True
         self._send(CH[d],     NOTE_SYNC, LED_ON)
         self._send(CH[1 - d], NOTE_SYNC, LED_OFF)
-        print(f"[Sync] deck {d}=MASTER  deck {1-d}=FOLLOWER  "
-              f"bpm={this.bpm * this.rate:.2f}")
+        print(f"[Sync] D{d+1}=FOLLOWER locked to D{2-d}=MASTER  "
+              f"bpm={other.bpm * other.rate:.2f}")
 
     def _sync_deck(self, d: int):
         """Legacy: keep for backwards compat, delegates to _sync_as_follower."""
