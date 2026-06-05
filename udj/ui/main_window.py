@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         self.controller.library = self.library
         # Give the library a reference to the engine for stem inspection
         self.library.set_engine(self.engine)
+        # Allow mixer widget to read controller state (transition FX sync)
+        self.engine._controller_ref = self.controller
         # Sync pad mode display when hardware cycles modes
         _deck_widgets = [self.deck1_widget, self.deck2_widget]
         self.controller.on_pad_mode_changed = (

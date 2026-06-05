@@ -212,11 +212,21 @@ class DeckWidget(QWidget):
         )
         self._norm_btn.toggled.connect(self._on_norm_toggle)
 
+        self._phrase_sync_btn = QPushButton("⌛ PHRASE SYNC")
+        self._phrase_sync_btn.setFixedHeight(20)
+        self._phrase_sync_btn.setStyleSheet(
+            "QPushButton{color:#555;background:#0e0e18;border:1px solid #2a2a40;"
+            "border-radius:3px;padding:0 6px;font-size:8px;font-weight:bold;}"
+            "QPushButton:pressed{color:#aa88ff;background:#1a1030;"
+            "border:1px solid #8844cc;}")
+        self._phrase_sync_btn.pressed.connect(self._on_phrase_sync)
+
         badges.addWidget(self.badge_master)
         badges.addWidget(self.badge_follower)
         badges.addWidget(self.badge_loop)
         badges.addWidget(self.badge_loop_arm)
         badges.addWidget(self.badge_stems)
+        badges.addWidget(self._phrase_sync_btn)
         badges.addStretch()
         badges.addWidget(self._norm_btn)
         root.addLayout(badges)
@@ -332,6 +342,11 @@ class DeckWidget(QWidget):
         # Show STEMS badge if track has audio but stems not yet ready
         if self.deck.audio is not None and not self.deck.stems_ready:
             self.badge_stems.setVisible(True)
+
+    def _on_phrase_sync(self):
+        engine = getattr(self, '_engine', None)
+        if engine:
+            engine.phrase_sync(self.deck.deck_id)
 
     def _on_stems_ready(self):
         self.badge_stems.setVisible(False)

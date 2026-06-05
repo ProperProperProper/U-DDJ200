@@ -99,9 +99,9 @@ class MixerWidget(QWidget):
         self._fx_knobs    = []
         self._fx_combos   = []
 
-        # Stem status badge only (no pills)
-        status_row = QHBoxLayout()
-        status_row.addStretch(1)
+        # ── Stems status + Transition FX button ───────────────
+        top_ctrl_row = QHBoxLayout()
+        top_ctrl_row.addStretch(1)
         for ch in range(2):
             lbl = QLabel("● STEMS READY")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -110,11 +110,28 @@ class MixerWidget(QWidget):
                 "background:#001a0d;border:1px solid #00ff88;"
                 "border-radius:4px;padding:1px 5px;")
             self._stems_lbl[ch] = lbl
-            status_row.addWidget(lbl)
+            top_ctrl_row.addWidget(lbl)
             if ch == 0:
-                status_row.addStretch(2)
-        status_row.addStretch(1)
-        root.addLayout(status_row)
+                top_ctrl_row.addStretch(2)
+        top_ctrl_row.addStretch(1)
+        root.addLayout(top_ctrl_row)
+
+        # Transition FX button — applies deep filter sweep across both channels
+        trans_row = QHBoxLayout()
+        trans_row.addStretch(1)
+        self._trans_fx_btn = QPushButton("⚡ TRANSITION FX")
+        self._trans_fx_btn.setCheckable(True)
+        self._trans_fx_btn.setFixedHeight(22)
+        self._trans_fx_btn.setStyleSheet(
+            "QPushButton{color:#555;background:#0e0e18;border:1px solid #2a2a40;"
+            "border-radius:4px;padding:0 10px;font-size:9px;font-weight:bold;}"
+            "QPushButton:checked{color:#000;background:#ff6600;"
+            "border:1px solid #ff8800;}"
+            "QPushButton:pressed{background:#1a1000;}")
+        self._trans_fx_btn.toggled.connect(self._on_trans_fx)
+        trans_row.addWidget(self._trans_fx_btn)
+        trans_row.addStretch(1)
+        root.addLayout(trans_row)
 
         # FX type selectors
         fx_combo_row = QHBoxLayout()
@@ -262,6 +279,15 @@ class MixerWidget(QWidget):
     def _on_xf(self, pos: float):
         self.mixer.crossfader = pos
 
+    def _on_trans_fx(self, active: bool):
+        """Transition FX — deep filter close across both channels."""
+        for ch in range(2):
+            if active:
+                self.mixer.set_fx_type(ch, "FILTER")
+                self.mixer.set_fx_raw(ch, 20)   # close filter
+            else:
+                self.mixer.set_fx_raw(ch, 64)   # bypass
+
     # ── tick ──────────────────────────────────────────────────
 
     def _tick(self):
@@ -271,6 +297,19 @@ class MixerWidget(QWidget):
 
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
+
+        # Master vol display in vol row (show as dB)
+        mv = self.mixer.master_vol
+        mv_db = f"M:{_db(mv)} dB" if mv > 0 else "M:−∞"
+        # Sync transition FX button from MIDI state
+        if self.engine:
+            ctrl = getattr(self.engine, '_controller_ref', None)
+            if ctrl:
+                tfx = getattr(ctrl, '_trans_fx_active', False)
+                if self._trans_fx_btn.isChecked() != tfx:
+                    self._trans_fx_btn.blockSignals(True)
+                    self._trans_fx_btn.setChecked(tfx)
+                    self._trans_fx_btn.blockSignals(False)
 
         # Update stem state pills + status badge
         if self.engine:
