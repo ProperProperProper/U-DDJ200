@@ -109,6 +109,10 @@ class MainWindow(QMainWindow):
         self.controller.library = self.library
         # Give the library a reference to the engine for stem inspection
         self.library.set_engine(self.engine)
+        # Sync pad mode display when hardware cycles modes
+        _deck_widgets = [self.deck1_widget, self.deck2_widget]
+        self.controller.on_pad_mode_changed = (
+            lambda d, m: _deck_widgets[d]._set_pad_mode(m))
 
     # ──────────────────────────────────────────────────────────
     #  Track loading

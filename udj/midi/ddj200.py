@@ -108,6 +108,7 @@ class DDJ200:
     def __init__(self, engine: AudioEngine):
         self.engine  = engine
         self.library = None   # set by main window after construction
+        self.on_pad_mode_changed = None  # callback(deck_idx, mode_name) for UI update
         self._in  = rtmidi.MidiIn()
         self._out = rtmidi.MidiOut()
 
@@ -382,37 +383,48 @@ class DDJ200:
                 return
 
             if status == PAD_N[d] and val:
-                # Bottom row pads always toggle stems regardless of pad mode
+                # Bottom row pads always toggle stems regardless of pad mode.
+                # Shift + last bottom pad (pad 8) cycles the top-row pad mode.
                 # HOT CUE bottom row = notes 0x04-0x07
                 # BEAT LOOP bottom row = notes BL_BASE+4 to BL_BASE+7
                 # Other modes bottom row = SP_BASE+4 to SP_BASE+7
-                stem_idx = None
+                bottom_note = None
+                bottom_idx  = None
                 if 0x04 <= note <= 0x07:
-                    stem_idx = note - 0x04
+                    bottom_note = note; bottom_idx = note - 0x04
                 elif BL_BASE + 4 <= note <= BL_BASE + 7:
-                    stem_idx = note - BL_BASE - 4
+                    bottom_note = note; bottom_idx = note - BL_BASE - 4
                 elif SP_BASE + 4 <= note <= SP_BASE + 7:
-                    stem_idx = note - SP_BASE - 4
+                    bottom_note = note; bottom_idx = note - SP_BASE - 4
 
-                if stem_idx is not None and stem_idx < len(STEM_NAMES):
-                    deck = self.engine.deck(d)
-                    name = STEM_NAMES[stem_idx]
-                    if deck.stems_ready:
-                        deck.toggle_stem(name)
-                        active = name in deck.active_stems
-                        self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
-                    # Shift + stem pad = echo out: engage echo at high depth
-                    if self._shift[d]:
-                        self.engine.mixer.set_fx_type(d, "ECHO")
-                        self.engine.mixer.set_fx_raw(d, 110)  # ~86% depth — long echo tail
-                        # Track which stems have echo for UI display
-                        if not hasattr(self.engine.deck(d), '_echo_stems'):
-                            self.engine.deck(d)._echo_stems = set()
-                        echo_set = self.engine.deck(d)._echo_stems
-                        if name in echo_set:
-                            echo_set.discard(name)
-                        else:
-                            echo_set.add(name)
+                if bottom_idx is not None:
+                    # Shift + pad 8 (last bottom pad) = cycle pad mode
+                    if self._shift[d] and bottom_idx == 3:
+                        idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
+                        self._pad_mode[d] = self._PAD_MODES[idx]
+                        self._refresh_pad_leds(d)
+                        if self.on_pad_mode_changed:
+                            self.on_pad_mode_changed(d, self._PAD_MODES[idx])
+                        return
+
+                    # Stem toggle
+                    if bottom_idx < len(STEM_NAMES):
+                        deck = self.engine.deck(d)
+                        name = STEM_NAMES[bottom_idx]
+                        if deck.stems_ready:
+                            deck.toggle_stem(name)
+                            active = name in deck.active_stems
+                            self._send(PAD_N[d], bottom_note, LED_ON if active else LED_OFF)
+                        # Shift + stem pad = echo out
+                        if self._shift[d]:
+                            self.engine.mixer.set_fx_type(d, "ECHO")
+                            self.engine.mixer.set_fx_raw(d, 110)
+                            if not hasattr(deck, '_echo_stems'):
+                                deck._echo_stems = set()
+                            if name in deck._echo_stems:
+                                deck._echo_stems.discard(name)
+                            else:
+                                deck._echo_stems.add(name)
                     return
 
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:

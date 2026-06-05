@@ -226,12 +226,14 @@ class DeckWidget(QWidget):
 
         # ── Performance pads — DDJ-200 layout ────────────────
         # Mode selector row
-        self._pad_mode = "BEAT LOOP"  # "HOT CUE" | "BEAT LOOP" | "STEMS" | "BEAT JUMP" | "PAD FX"
+        self._pad_mode = "BEAT LOOP"
+        # Bottom row pads always = stems. Top row cycles through these 4 modes.
+        _PAD_MODES_UI = [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"),
+                         ("BEAT JUMP","#ffcc00"), ("PAD FX","#ff6600")]
         mode_row = QHBoxLayout()
         mode_row.setSpacing(3)
         self._mode_btns: dict[str, QPushButton] = {}
-        for mode, color in [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"), ("STEMS","#bb88ff"),
-                             ("BEAT JUMP","#ffcc00"), ("PAD FX","#ff6600")]:
+        for mode, color in _PAD_MODES_UI:
             b = QPushButton(mode)
             b.setCheckable(True)
             b.setChecked(mode == "BEAT LOOP")
