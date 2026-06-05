@@ -425,10 +425,13 @@ class DDJ200:
                             if deck.stems_ready:
                                 deck.toggle_stem(name)
                                 active = name in deck.active_stems
-                                self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                                vel = LED_ON if active else LED_OFF
                             else:
-                                # Not ready — flash off to signal unavailable
-                                self._send(PAD_N[d], note, LED_OFF)
+                                vel = LED_OFF
+                            # Send to all 3 channel addresses — hardware may be in any mode
+                            self._send(PAD_N[d], top_idx,            vel)
+                            self._send(PAD_N[d], BL_BASE + top_idx,  vel)
+                            self._send(PAD_N[d], SP_BASE + top_idx,  vel)
                         if self.on_pad_mode_changed:
                             self.on_pad_mode_changed(d, mode)
                         return
@@ -454,10 +457,12 @@ class DDJ200:
                                 self.engine.mixer.set_fx_raw(d, 100)
                             else:
                                 self.engine.mixer.set_fx_raw(d, 64)
-                            # Update LEDs
+                            # Update echo LEDs across all 3 channel addresses
                             for i in range(3):
-                                base = [0x04,0x05,0x06]
-                                self._send(PAD_N[d], base[i], LED_ON if deck._echo_active[i] else LED_OFF)
+                                vel = LED_ON if deck._echo_active[i] else LED_OFF
+                                self._send(PAD_N[d], 4 + i,           vel)
+                                self._send(PAD_N[d], BL_BASE + 4 + i, vel)
+                                self._send(PAD_N[d], SP_BASE + 4 + i, vel)
                         if self.on_pad_mode_changed:
                             self.on_pad_mode_changed(d, mode)
                         return
@@ -493,7 +498,10 @@ class DDJ200:
                         if deck.stems_ready:
                             deck.toggle_stem(name)
                             active = name in deck.active_stems
-                            self._send(PAD_N[d], bottom_note, LED_ON if active else LED_OFF)
+                            vel = LED_ON if active else LED_OFF
+                            self._send(PAD_N[d], 4 + bottom_idx,           vel)
+                            self._send(PAD_N[d], BL_BASE + 4 + bottom_idx, vel)
+                            self._send(PAD_N[d], SP_BASE + 4 + bottom_idx, vel)
                     return
 
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:
@@ -680,20 +688,22 @@ class DDJ200:
         elif mode == "STEMS":
             deck = self.engine.deck(d)
             _stem_order = ["vocals", "bass", "drums", "other"]
+
+            def _pad_led(idx, vel):
+                """Send LED to all 3 channel addresses — works in any hardware mode."""
+                self._send(PAD_N[d], idx,            vel)
+                self._send(PAD_N[d], BL_BASE + idx,  vel)
+                self._send(PAD_N[d], SP_BASE + idx,  vel)
+
             if not deck.stems_ready:
-                # Stems not loaded yet — show all dark so user knows to wait
                 for i in range(7):
-                    self._send(PAD_N[d], i, LED_OFF)
+                    _pad_led(i, LED_OFF)
             else:
-                # Top row (0x00-0x03): stem mute state
                 for i, name in enumerate(_stem_order):
-                    active = name in deck.active_stems
-                    self._send(PAD_N[d], i, LED_ON if active else LED_OFF)
-                # Bottom row (0x04-0x06): echo pad state
+                    _pad_led(i, LED_ON if name in deck.active_stems else LED_OFF)
                 echo_active = getattr(deck, '_echo_active', [False, False, False])
                 for i in range(3):
-                    self._send(PAD_N[d], 0x04 + i,
-                               LED_ON if echo_active[i] else LED_OFF)
+                    _pad_led(4 + i, LED_ON if echo_active[i] else LED_OFF)
 
     def _eq_apply(self, deck: int, band: int, val: int) -> bool:
         """
