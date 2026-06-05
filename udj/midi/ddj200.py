@@ -120,7 +120,8 @@ class DDJ200:
         self._loop_recording  = [False, False]   # True while awaiting loop-out press
         # Pad mode per deck: cycles HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX
         self._pad_mode       = ["BEAT LOOP", "BEAT LOOP"]
-        _PAD_MODES = ["HOT CUE", "BEAT LOOP", "STEMS", "BEAT JUMP", "PAD FX"]
+        _PAD_MODES = ["HOT CUE", "BEAT LOOP", "BEAT JUMP", "PAD FX"]
+        # STEMS removed — bottom row pads (5-8) always control stems in any mode
         self._PAD_MODES      = _PAD_MODES
         self._pfx_held       = [[False]*8, [False]*8]   # pad FX gate state per deck
         self._jog_key_accum  = [0, 0]                   # fractional key shift accumulator
@@ -310,25 +311,16 @@ class DDJ200:
                 if note == CC_TRIM:
                     return   # trim/gain knob — absorbed
                 if note == CC_EQ_HI:
-                    if self._shift[d]:
-                        if self._eq_apply(d, 0, val):
-                            self.engine.mixer.set_eq_raw(d, "high", val)
-                    else:
-                        self.engine.deck(d).set_stem_volume("vocals", val / 127.0)
+                    if self._eq_apply(d, 0, val):
+                        self.engine.mixer.set_eq_raw(d, "high", val)
                     return
                 if note == CC_EQ_MID:
-                    if self._shift[d]:
-                        if self._eq_apply(d, 1, val):
-                            self.engine.mixer.set_eq_raw(d, "mid", val)
-                    else:
-                        self.engine.deck(d).set_stem_volume("drums", val / 127.0)
+                    if self._eq_apply(d, 1, val):
+                        self.engine.mixer.set_eq_raw(d, "mid", val)
                     return
                 if note == CC_EQ_LOW:
-                    if self._shift[d]:
-                        if self._eq_apply(d, 2, val):
-                            self.engine.mixer.set_eq_raw(d, "low", val)
-                    else:
-                        self.engine.deck(d).set_stem_volume("bass", val / 127.0)
+                    if self._eq_apply(d, 2, val):
+                        self.engine.mixer.set_eq_raw(d, "low", val)
                     return
                 if note == CC_JOG_SIDE and not self._jog_touch[d]:
                     delta = val if val < 64 else val - 128
@@ -364,16 +356,10 @@ class DDJ200:
                 self.engine.mixer.set_crossfader_raw(raw)
                 return
             if note == CC_CFX[0]:
-                if self._shift[0]:
-                    self.engine.mixer.set_fx_raw(0, val)
-                else:
-                    self.engine.deck(0).set_stem_volume("other", val / 127.0)
+                self.engine.mixer.set_fx_raw(0, val)
                 return
             if note == CC_CFX[1]:
-                if self._shift[1]:
-                    self.engine.mixer.set_fx_raw(1, val)
-                else:
-                    self.engine.deck(1).set_stem_volume("other", val / 127.0)
+                self.engine.mixer.set_fx_raw(1, val)
                 return
 
         # ── Performance pads — mode-aware ─────────────────────
@@ -396,6 +382,27 @@ class DDJ200:
                 return
 
             if status == PAD_N[d] and val:
+                # Bottom row pads always toggle stems regardless of pad mode
+                # HOT CUE bottom row = notes 0x04-0x07
+                # BEAT LOOP bottom row = notes BL_BASE+4 to BL_BASE+7
+                # Other modes bottom row = SP_BASE+4 to SP_BASE+7
+                stem_idx = None
+                if 0x04 <= note <= 0x07:
+                    stem_idx = note - 0x04
+                elif BL_BASE + 4 <= note <= BL_BASE + 7:
+                    stem_idx = note - BL_BASE - 4
+                elif SP_BASE + 4 <= note <= SP_BASE + 7:
+                    stem_idx = note - SP_BASE - 4
+
+                if stem_idx is not None and stem_idx < len(STEM_NAMES):
+                    deck = self.engine.deck(d)
+                    name = STEM_NAMES[stem_idx]
+                    if deck.stems_ready:
+                        deck.toggle_stem(name)
+                        active = name in deck.active_stems
+                        self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                    return
+
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:
                     self.engine.deck(d).hotcue_activate(note)
                     enabled = self.engine.deck(d).hot_cues[note] is not None

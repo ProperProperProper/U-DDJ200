@@ -21,11 +21,11 @@ import threading
 import numpy as np
 from typing import Callable, Optional
 
-STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
+STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v11"  # v11: cross-stem drum bleed subtraction from vocals (hi-hat removal)
+STEMS_VERSION = "v12"  # v12: 4-stem only (Serato model) — removed DSP guitar/piano split
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -264,12 +264,6 @@ def _separate_demucs(file_path: str, target_sr: int,
     orig = orig[:n]
     raw_stems = {k: v[:n] for k, v in raw_stems.items()}
 
-    # If model only gave 4 stems, derive guitar+piano from "other" via DSP
-    if "guitar" not in raw_stems and "other" in raw_stems:
-        raw_stems["guitar"], raw_stems["piano"] = _split_other_to_guitar_piano(
-            raw_stems["other"], target_sr)
-        print("[Stems] guitar+piano derived via DSP split of 'other'")
-
     # Replace demucs vocals with MelBand Roformer if available — state-of-art isolation.
     roformer_vocals = _roformer_vocals(file_path, target_sr, n)
     if roformer_vocals is not None:
@@ -309,10 +303,6 @@ def _post_process_stems(raw: dict[str, np.ndarray], sr: int,
         result["other"] = _process_other(raw["other"], sr)
     if "vocals" in raw:
         result["vocals"] = _process_vocals(raw["vocals"], sr)
-    if "guitar" in raw:
-        result["guitar"] = _process_guitar(raw["guitar"], sr)
-    if "piano" in raw:
-        result["piano"]  = _process_piano(raw["piano"],  sr)
 
     # Cross-stem bleed correction — remove drum content from vocals.
     # Hi-hats and cymbals (>4 kHz, fast transients) bleed heavily into the

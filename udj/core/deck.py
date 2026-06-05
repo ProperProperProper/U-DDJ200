@@ -15,7 +15,7 @@ from . import event_log
 
 NUM_HOT_CUES    = 8
 BEAT_LOOP_SIZES = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-STEM_NAMES      = ["drums", "bass", "other", "vocals", "guitar", "piano"]
+STEM_NAMES      = ["drums", "bass", "other", "vocals"]
 _LOOP_XFADE     = 64   # samples crossfade at loop boundary (prevents click)
 
 
@@ -418,7 +418,7 @@ class Deck:
         else:
             self.active_stems.add(name)
 
-    # Individual stem kill knobs — 4 primary stems, hardware-mapped
+    # 4 stems matching Serato: Vocals, Drums, Bass, Melody (other)
     STEM_KNOB_NAMES = ["vocals", "drums", "bass", "other"]
 
     def set_stem_blend(self, knob_idx: int, raw: float):
