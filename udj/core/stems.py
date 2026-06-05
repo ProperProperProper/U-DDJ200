@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v8"   # shifts=2 + dance/techno post-processing (drums, synths, vocal samples)
+STEMS_VERSION = "v9"   # shifts=4 + MelBand Roformer vocals (state-of-art) + techno post-processing
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -234,7 +234,7 @@ def _separate_demucs(file_path: str, target_sr: int,
             model,
             wav.unsqueeze(0),
             device=device,
-            shifts=2,      # 2-pass phase averaging — measurably better drum/bass isolation
+            shifts=4,      # 4-pass phase averaging — maximum quality for drums/bass
             overlap=0.25,
             progress=False,
         )[0]   # (num_stems, 2, N)
@@ -269,6 +269,16 @@ def _separate_demucs(file_path: str, target_sr: int,
         raw_stems["guitar"], raw_stems["piano"] = _split_other_to_guitar_piano(
             raw_stems["other"], target_sr)
         print("[Stems] guitar+piano derived via DSP split of 'other'")
+
+    # Replace demucs vocals with MelBand Roformer if available — state-of-art isolation.
+    # Roformer is trained specifically for clean vocal extraction and significantly
+    # outperforms demucs for short vocal samples (techno stabs, vocal chops).
+    roformer_vocals = _roformer_vocals(file_path, target_sr, n)
+    if roformer_vocals is not None:
+        raw_stems["vocals"] = roformer_vocals
+        print("[Stems] Roformer vocals → replacing demucs vocals")
+    else:
+        print("[Stems] Roformer unavailable — using demucs vocals")
 
     # Post-process each stem, then calibrate levels
     processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
@@ -531,6 +541,51 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64[:, 1] *= gate
 
     return audio64.astype(np.float32)
+
+
+def _roformer_vocals(file_path: str, target_sr: int, n_samples: int) -> "np.ndarray | None":
+    """
+    Run MelBand Roformer Kim InstVoc Duality V2 to get cleaner vocals than demucs.
+    This model is 2024 state-of-the-art for vocal isolation — trained specifically
+    for clean extraction of vocals (including short samples/stabs used in techno).
+    Falls back to None if audio-separator is not available.
+    """
+    import tempfile, logging
+    import soundfile as sf
+    try:
+        from audio_separator.separator import Separator
+        print("[Stems] running MelBand Roformer for vocals (state-of-art isolation)")
+        with tempfile.TemporaryDirectory() as tmp:
+            sep = Separator(
+                output_dir=tmp,
+                output_format="WAV",
+                log_level=logging.WARNING,
+            )
+            # MelBand Roformer Kim InstVoc Duality V2 — best publicly available vocal model
+            sep.load_model("MelBand Roformer Kim | InstVoc Duality V2 by Unwa")
+            out_files = sep.separate(file_path)
+            # Find the vocals file (Duality outputs Vocals + Instrumental)
+            vocals_file = next(
+                (f for f in out_files if "Vocals" in f or "vocals" in f), None)
+            if vocals_file is None:
+                print("[Stems] Roformer: no vocals file in output")
+                return None
+            audio, sr = sf.read(vocals_file, dtype="float32", always_2d=True)
+            if audio.shape[1] == 1:
+                audio = np.repeat(audio, 2, axis=1)
+            if sr != target_sr:
+                from math import gcd
+                from scipy.signal import resample_poly
+                g = gcd(sr, target_sr)
+                audio = resample_poly(audio, target_sr // g, sr // g).astype(np.float32)
+            # Trim to match demucs length
+            audio = audio[:n_samples]
+            if len(audio) < n_samples:
+                audio = np.pad(audio, ((0, n_samples - len(audio)), (0, 0)))
+            return np.ascontiguousarray(audio.astype(np.float32))
+    except Exception as e:
+        print(f"[Stems] Roformer vocals failed ({e}) — using demucs vocals")
+        return None
 
 
 def _split_other_to_guitar_piano(other: np.ndarray, sr: int

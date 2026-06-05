@@ -16,6 +16,12 @@ a = Analysis(
         ('stem_analyzer.py', '.'),
     ],
     hiddenimports=[
+        # audio-separator / onnxruntime (Roformer vocal model)
+        'audio_separator',
+        'audio_separator.separator',
+        'onnxruntime',
+        'onnxruntime.capi',
+        'onnxruntime.capi.onnxruntime_inference_collection',
         # sounddevice / PortAudio
         'sounddevice',
         # soundfile / libsndfile
