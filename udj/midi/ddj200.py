@@ -314,21 +314,21 @@ class DDJ200:
                         if self._eq_apply(d, 0, val):
                             self.engine.mixer.set_eq_raw(d, "high", val)
                     else:
-                        self.engine.deck(d).set_stem_blend(0, val / 127.0)
+                        self.engine.deck(d).set_stem_volume("vocals", val / 127.0)
                     return
                 if note == CC_EQ_MID:
                     if self._shift[d]:
                         if self._eq_apply(d, 1, val):
                             self.engine.mixer.set_eq_raw(d, "mid", val)
                     else:
-                        self.engine.deck(d).set_stem_blend(1, val / 127.0)
+                        self.engine.deck(d).set_stem_volume("drums", val / 127.0)
                     return
                 if note == CC_EQ_LOW:
                     if self._shift[d]:
                         if self._eq_apply(d, 2, val):
                             self.engine.mixer.set_eq_raw(d, "low", val)
                     else:
-                        self.engine.deck(d).set_stem_blend(2, val / 127.0)
+                        self.engine.deck(d).set_stem_volume("bass", val / 127.0)
                     return
                 if note == CC_JOG_SIDE and not self._jog_touch[d]:
                     delta = val if val < 64 else val - 128
@@ -364,10 +364,16 @@ class DDJ200:
                 self.engine.mixer.set_crossfader_raw(raw)
                 return
             if note == CC_CFX[0]:
-                self.engine.mixer.set_fx_raw(0, val)   # CFX = color FX depth
+                if self._shift[0]:
+                    self.engine.mixer.set_fx_raw(0, val)
+                else:
+                    self.engine.deck(0).set_stem_volume("other", val / 127.0)
                 return
             if note == CC_CFX[1]:
-                self.engine.mixer.set_fx_raw(1, val)
+                if self._shift[1]:
+                    self.engine.mixer.set_fx_raw(1, val)
+                else:
+                    self.engine.deck(1).set_stem_volume("other", val / 127.0)
                 return
 
         # ── Performance pads — mode-aware ─────────────────────

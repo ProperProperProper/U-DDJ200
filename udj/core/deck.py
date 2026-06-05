@@ -418,45 +418,29 @@ class Deck:
         else:
             self.active_stems.add(name)
 
-    # 3 knobs, 6 stems — each knob is a pure 2-stem crossfader:
-    #   hard left  = kill stem_a, stem_b full
-    #   center     = both full
-    #   hard right = stem_a full, kill stem_b
-    STEM_PAIRS = [
-        ("vocals", "drums"),
-        ("bass",   "other"),
-        ("guitar", "piano"),
-    ]
+    # Individual stem kill knobs — 4 primary stems, hardware-mapped
+    STEM_KNOB_NAMES = ["vocals", "drums", "bass", "other"]
 
-    def set_stem_blend(self, pair_idx: int, raw: float):
+    def set_stem_blend(self, knob_idx: int, raw: float):
+        """Individual stem kill knob (replaces crossfader model).
+        raw 0.0 = kill, raw 0.5-1.0 = full.
+        Maps knob_idx 0-3 to vocals/drums/bass/other.
         """
-        Pure crossfader between two stems.
-        raw 0.0 → hard cut stem_a, stem_b full
-        raw 0.5 → both full
-        raw 1.0 → stem_a full, hard cut stem_b
-        """
-        raw = max(0.0, min(1.0, float(raw)))
-        stem_a, stem_b = self.STEM_PAIRS[pair_idx]
-
-        if raw <= 0.5:
-            vol_a = raw / 0.5        # 0→0 … 0.5→1
-            vol_b = 1.0
-        else:
-            vol_a = 1.0
-            vol_b = (1.0 - raw) / 0.5   # 0.5→1 … 1.0→0
-
-        for stem, vol in ((stem_a, vol_a), (stem_b, vol_b)):
-            self.stem_volumes[stem] = vol
-            if vol < 0.01:
-                self.active_stems.discard(stem)
-            else:
-                self.active_stems.add(stem)
+        if knob_idx >= len(self.STEM_KNOB_NAMES):
+            return
+        self.set_stem_volume(self.STEM_KNOB_NAMES[knob_idx], raw)
 
     def set_stem_volume(self, name: str, raw: float):
-        """Legacy single-stem volume (used by MIDI/sampler pads)."""
+        """Individual stem kill knob.
+        raw 0.0 = kill, raw 0.5 = full, raw 0.5-1.0 = full (no boost).
+        Sqrt taper on the left half so the feel matches DJM EQ kill knobs.
+        """
         import math
         raw = max(0.0, min(1.0, float(raw)))
-        vol = math.sqrt(raw) if raw < 1.0 else 1.0
+        if raw >= 0.5:
+            vol = 1.0
+        else:
+            vol = math.sqrt(raw / 0.5)   # 0→0, 0.5→1, smooth sqrt curve
         self.stem_volumes[name] = vol
         if raw < 0.01:
             self.active_stems.discard(name)
