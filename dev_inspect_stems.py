@@ -37,7 +37,6 @@ def load_or_separate(track_path: str, sample_rate: int = 44100) -> tuple[dict, n
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     from udj.core.stems import (
         _cache_path, _load_cache, _separate_demucs, _save_cache,
-        _split_other_to_guitar_piano,
     )
 
     stems = None
@@ -69,10 +68,7 @@ def load_or_separate(track_path: str, sample_rate: int = 44100) -> tuple[dict, n
     # Pop metadata flags
     stems.pop("_vocal_present", None)
 
-    # DSP-derive guitar/piano if not present
-    if "guitar" not in stems and "other" in stems:
-        stems["guitar"], stems["piano"] = _split_other_to_guitar_piano(
-            stems["other"], sample_rate)
+    # guitar/piano split removed — app uses 4-stem model only (Serato style)
 
     # Load original
     orig, orig_sr = sf.read(track_path, dtype="float32", always_2d=True)

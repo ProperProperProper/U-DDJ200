@@ -409,7 +409,7 @@ class _InspectWorker(QObject):
         try:
             import numpy as np
             import soundfile as sf
-            from ..core.stems import _split_other_to_guitar_piano
+            from ..core.stems import STEM_NAMES as _STEM_NAMES
             try:
                 from stem_analyzer import load_cached_stems, is_cached
                 _has_wav_cache = True
@@ -445,8 +445,8 @@ class _InspectWorker(QObject):
                     return
 
                 stems.pop("_vocal_present", None)
-                if "guitar" not in stems and "other" in stems:
-                    stems["guitar"], stems["piano"] = _split_other_to_guitar_piano(stems["other"], sr)
+                # Keep only the 4 primary stems
+                stems = {k: v for k, v in stems.items() if k in _STEM_NAMES or k == "_vocal_present"}
 
                 orig, orig_sr = sf.read(path, dtype="float32", always_2d=True)
                 if orig.shape[1] == 1:

@@ -67,7 +67,6 @@ class Deck:
         self.active_stems: set[str] = set(STEM_NAMES)
         self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
         self.stems_ready  = False
-        self._stems_cache: Optional[np.ndarray] = None
         self._solo_stem:   Optional[str] = None
 
         # Smooth stem fade — prevents clicks on toggle.
@@ -123,7 +122,6 @@ class Deck:
             self.duration     = len(audio) / self.sample_rate
             self.stems              = None
             self.stems_ready        = False
-            self._stems_cache       = None
             self.active_stems       = set(STEM_NAMES)
             self.stem_volumes       = {s: 1.0 for s in STEM_NAMES}
             self._stem_fade         = {s: 1.0 for s in STEM_NAMES}
@@ -430,52 +428,6 @@ class Deck:
             self.active_stems.add(name)
             self._stem_fade[name] = 0.0
             self._stem_fade_target[name] = 1.0
-
-    # 4 stems matching Serato: Vocals, Drums, Bass, Melody (other)
-    STEM_KNOB_NAMES = ["vocals", "drums", "bass", "other"]
-
-    def set_stem_blend(self, knob_idx: int, raw: float):
-        """Individual stem kill knob (replaces crossfader model).
-        raw 0.0 = kill, raw 0.5-1.0 = full.
-        Maps knob_idx 0-3 to vocals/drums/bass/other.
-        """
-        if knob_idx >= len(self.STEM_KNOB_NAMES):
-            return
-        self.set_stem_volume(self.STEM_KNOB_NAMES[knob_idx], raw)
-
-    def set_stem_volume(self, name: str, raw: float):
-        """Individual stem kill knob.
-        raw 0.0 = kill, raw 0.5 = full, raw 0.5-1.0 = full (no boost).
-        Sqrt taper on the left half so the feel matches DJM EQ kill knobs.
-        """
-        import math
-        raw = max(0.0, min(1.0, float(raw)))
-        if raw >= 0.5:
-            vol = 1.0
-        else:
-            vol = math.sqrt(raw / 0.5)   # 0→0, 0.5→1, smooth sqrt curve
-        self.stem_volumes[name] = vol
-        if raw < 0.01:
-            self.active_stems.discard(name)
-        else:
-            self.active_stems.add(name)
-
-    def _rebuild_stems_cache(self):
-        """Recompute the precomputed mix of active stems with per-stem volumes."""
-        if not self.stems or self.audio is None:
-            self._stems_cache = None
-            return
-        result = None
-        for s in self.active_stems:
-            if s not in self.stems:
-                continue
-            vol = self.stem_volumes.get(s, 1.0)
-            part = self.stems[s] * vol
-            result = part.copy() if result is None else result + part
-        if result is None:
-            self._stems_cache = np.zeros_like(self.audio)
-        else:
-            self._stems_cache = np.clip(result, -1.0, 1.0).astype(np.float32)
 
     # ── Jog ───────────────────────────────────────────────────
 

@@ -69,7 +69,6 @@ class MixerWidget(QWidget):
         self._master_peak_fn = master_peak_fn
         self._deck_peak_fns  = deck_peak_fns or []
 
-        self._stem_knobs:   list = [[], []]   # [ch][blend_idx 0-1] → QDial
         self._stems_lbl:    list = [None, None]  # [ch] → QLabel loading indicator
         self._eq_knobs:     list = [[], []]   # [ch][band_idx 0=hi,1=mid,2=lo] → QDial
         self._fx_knobs:     list = []         # [ch] → QDial (shift+knob = CFX)
@@ -89,20 +88,13 @@ class MixerWidget(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(4)
 
-        # EQ knobs only — stems controlled via bottom row pads (Serato style)
-        # Row 1: HI EQ
-        # Row 2: MID EQ
-        # Row 3: LOW EQ
-        # Row 4: FX
         _EQ_ROWS = [
             ("HI",  "#00c8ff", "high"),
             ("MID", "#44cc88", "mid"),
             ("LOW", "#ff7733", "low"),
             ("FX",  "#bb88ff", "fx"),
         ]
-        self._stem_knobs  = [[], []]
         self._stem_btns   = [[], []]
-        self._echo_btns   = [[], []]
         self._eq_knobs    = [[], []]
         self._fx_knobs    = []
         self._fx_combos   = []
@@ -266,13 +258,6 @@ class MixerWidget(QWidget):
         root.addWidget(self._xfader)
 
     # ── handlers ──────────────────────────────────────────────
-
-    def reset_stem_knobs(self, ch: int):
-        """Reset all stem blend knobs to center when a track loads."""
-        for k in self._stem_knobs[ch]:
-            k.blockSignals(True)
-            k.setValue(64)
-            k.blockSignals(False)
 
     def _on_xf(self, pos: float):
         self.mixer.crossfader = pos

@@ -207,7 +207,6 @@ def _separate_demucs(file_path: str, target_sr: int,
     print(f"[Stems] using device={device}")
 
     # htdemucs_ft: fine-tuned 4-stem (drums, bass, other, vocals) — fastest quality model.
-    # guitar+piano are DSP-derived from "other" after separation (see _split_other_to_guitar_piano).
     # htdemucs_6s is slower (6 output heads) with minimal quality gain for electronic music
     # where "guitar" and "piano" are synths anyway.
     try:
@@ -622,76 +621,6 @@ def _roformer_vocals(file_path: str, target_sr: int, n_samples: int) -> "np.ndar
     except Exception as e:
         print(f"[Stems] Roformer vocals failed ({e}) — using demucs vocals")
         return None
-
-
-def _split_other_to_guitar_piano(other: np.ndarray, sr: int
-                                  ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    DSP split of the 'other' stem into guitar-like and piano-like components.
-    Guitar/Lead:  brighter, more transient-heavy (HP 2000 Hz) — lead synths, stabs
-    Piano/Pad:    lower harmonic content  (LP 2000 Hz) — pads, chords (200-2000 Hz range)
-    Crossover raised from 1500 Hz to 2000 Hz: techno pads/stabs live at 200-2000 Hz,
-    raising the crossover captures more pad content in the piano stem, increasing its level.
-    """
-    from scipy.signal import sosfilt, butter
-    nyq = sr / 2
-    xover = min(2000.0 / nyq, 0.99)
-
-    sos_hp = butter(4, xover, "high", output="sos")
-    sos_lp = butter(4, xover, "low",  output="sos")
-
-    a64 = other.astype(np.float64)
-    guitar = np.stack([sosfilt(sos_hp, a64[:, 0]),
-                       sosfilt(sos_hp, a64[:, 1])], axis=1).astype(np.float32)
-    piano  = np.stack([sosfilt(sos_lp, a64[:, 0]),
-                       sosfilt(sos_lp, a64[:, 1])], axis=1).astype(np.float32)
-    return guitar, piano
-
-
-def _process_guitar(audio: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Guitar: HP 80 Hz (remove bass/kick bleed), presence boost +2 dB at 2–5 kHz.
-    """
-    from scipy.signal import sosfilt, butter
-    nyq = sr / 2
-    a64 = audio.astype(np.float64)
-
-    sos_hp = butter(4, 80.0 / nyq, "high", output="sos")
-    a64 = np.stack([sosfilt(sos_hp, a64[:, 0]),
-                    sosfilt(sos_hp, a64[:, 1])], axis=1)
-
-    sos_pres_hp = butter(2, 2000.0 / nyq, "high", output="sos")
-    sos_pres_lp = butter(2, min(5000.0 / nyq, 0.99), "low", output="sos")
-    pres_L = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, a64[:, 0]))
-    pres_R = sosfilt(sos_pres_lp, sosfilt(sos_pres_hp, a64[:, 1]))
-    pres_gain = 10.0 ** (2.0 / 20.0) - 1.0
-    a64[:, 0] += pres_L * pres_gain
-    a64[:, 1] += pres_R * pres_gain
-
-    return a64.astype(np.float32)
-
-
-def _process_piano(audio: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Piano/chords: HP 60 Hz (remove sub-bass bleed), gentle warmth boost +1.5 dB at 200–800 Hz.
-    """
-    from scipy.signal import sosfilt, butter
-    nyq = sr / 2
-    a64 = audio.astype(np.float64)
-
-    sos_hp = butter(4, 60.0 / nyq, "high", output="sos")
-    a64 = np.stack([sosfilt(sos_hp, a64[:, 0]),
-                    sosfilt(sos_hp, a64[:, 1])], axis=1)
-
-    sos_w_hp = butter(2, 200.0 / nyq, "high", output="sos")
-    sos_w_lp = butter(2, min(800.0 / nyq, 0.99), "low", output="sos")
-    w_L = sosfilt(sos_w_lp, sosfilt(sos_w_hp, a64[:, 0]))
-    w_R = sosfilt(sos_w_lp, sosfilt(sos_w_hp, a64[:, 1]))
-    warm_gain = 10.0 ** (1.5 / 20.0) - 1.0
-    a64[:, 0] += w_L * warm_gain
-    a64[:, 1] += w_R * warm_gain
-
-    return a64.astype(np.float32)
 
 
 def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,

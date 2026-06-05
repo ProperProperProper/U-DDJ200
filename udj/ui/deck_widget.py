@@ -416,28 +416,6 @@ class DeckWidget(QWidget):
                 engine.mixer.set_fx_raw(deck_idx, 64)  # centre = bypass
         self._refresh_pads()
 
-    def _pfx_press(self, n: int): pass
-    def _pfx_release(self, n: int): pass
-    def _hc_press(self, n: int): self._pad_press(n)
-    def _hc_right_click(self, n: int): self._pad_right_click(n)
-    def _bl_press(self, n: int): self._pad_press(n)
-    def _bj_press(self, n: int): self._pad_press(n)
-    def _stm_press(self, n: int): self._pad_press(n)
-    def _stm_release(self, n: int): self._pad_release(n)
-
-    def _stem_solo_start(self, name: str):
-        """Temporarily mute all stems except `name`."""
-        self.deck._solo_stem = name
-        for s in ["drums","bass","other","vocals"]:
-            self.deck.stem_volumes[s] = 1.0 if s == name else 0.0
-
-    def _stem_solo_end(self, name: str):
-        """Restore all stems after solo hold."""
-        self.deck._solo_stem = None
-        for s in ["drums","bass","other","vocals"]:
-            self.deck.stem_volumes[s] = 1.0
-        self._refresh_pads()
-
     # PAD_FX_PARAMS: (fx_type, depth) — applied to channel FX while held
     _PAD_FX_PARAMS = [
         ("FILTER", 0.1),   # Filter sweep down
