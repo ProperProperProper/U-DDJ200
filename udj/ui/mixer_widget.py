@@ -100,36 +100,17 @@ class MixerWidget(QWidget):
             ("LOW", "#ff7733", "low"),
             ("FX",  "#bb88ff", "fx"),
         ]
-        # Stem state pills — logical order: KICK SNARE BASS SYNTH VOC
-        # Maps to deck stem names: drums, bass, other, vocals
-        _STEM_LABELS = [
-            ("KICK",  "drums",   "#ff4466"),
-            ("SNARE", "drums",   "#ff8844"),  # visual only — both map to drums stem
-            ("BASS",  "bass",    "#ff9900"),
-            ("SYNTH", "other",   "#44aaff"),
-            ("VOC",   "vocals",  "#aa44ff"),
-        ]
-        # We only have 4 real stems; collapse kick+snare into one DRM pill
-        _STEM_PILLS = [
-            ("DRM",   "drums",   "#ff4466"),
-            ("BASS",  "bass",    "#ff9900"),
-            ("SYNTH", "other",   "#44aaff"),
-            ("VOC",   "vocals",  "#aa44ff"),
-        ]
-
         self._stem_knobs  = [[], []]
         self._stem_btns   = [[], []]
-        self._echo_btns   = [[], []]   # kept for compat but empty
+        self._echo_btns   = [[], []]
         self._eq_knobs    = [[], []]
         self._fx_knobs    = []
         self._fx_combos   = []
 
-        # Stem status badge + stem state pills
-        top_row = QHBoxLayout()
-        top_row.addStretch(1)
+        # Stem status badge only (no pills)
+        status_row = QHBoxLayout()
+        status_row.addStretch(1)
         for ch in range(2):
-            ch_col = QVBoxLayout()
-            ch_col.setSpacing(2)
             lbl = QLabel("● STEMS READY")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(
@@ -137,27 +118,11 @@ class MixerWidget(QWidget):
                 "background:#001a0d;border:1px solid #00ff88;"
                 "border-radius:4px;padding:1px 5px;")
             self._stems_lbl[ch] = lbl
-            ch_col.addWidget(lbl)
-            pill_row = QHBoxLayout()
-            pill_row.setSpacing(3)
-            self._stem_btns[ch] = []
-            for plabel, sname, scolor in _STEM_PILLS:
-                pill = QLabel(plabel)
-                pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                pill.setFixedWidth(36)
-                pill.setStyleSheet(
-                    f"color:{scolor};font-size:7px;font-weight:bold;"
-                    f"background:#0a0a14;border:1px solid {scolor};"
-                    f"border-radius:3px;padding:1px 2px;")
-                pill.setProperty("stem_name", sname)
-                self._stem_btns[ch].append(pill)
-                pill_row.addWidget(pill)
-            ch_col.addLayout(pill_row)
-            top_row.addLayout(ch_col)
+            status_row.addWidget(lbl)
             if ch == 0:
-                top_row.addStretch(2)
-        top_row.addStretch(1)
-        root.addLayout(top_row)
+                status_row.addStretch(2)
+        status_row.addStretch(1)
+        root.addLayout(status_row)
 
         # FX type selectors
         fx_combo_row = QHBoxLayout()
@@ -332,34 +297,6 @@ class MixerWidget(QWidget):
                 has_track = deck.audio is not None
                 stems_ready = deck.stems_ready
 
-                # Update stem pills from their stem_name property
-                for pill in self._stem_btns[ch]:
-                    sname = pill.property("stem_name") or ""
-                    col   = _STEM_COLORS.get(sname, "#888")
-                    label = pill.text() if pill.text() != "╳" else pill.property("stem_name") or "?"
-                    # Restore original label from pill's own text if it got replaced with ╳
-                    # Use the pill's current non-╳ text (set at build time)
-                    active = sname in deck.active_stems
-                    orig_label = {"vocals": "VOC", "drums": "DRM",
-                                  "bass": "BASS", "other": "SYNTH"}.get(sname, sname.upper())
-                    # Override with display label stored at build
-                    if not stems_ready:
-                        pill.setStyleSheet(
-                            "color:#333;font-size:7px;font-weight:bold;"
-                            "background:#111;border:1px solid #222;"
-                            "border-radius:3px;padding:1px 2px;")
-                    elif active:
-                        pill.setText(orig_label)
-                        pill.setStyleSheet(
-                            f"color:#000;font-size:7px;font-weight:bold;"
-                            f"background:{col};border:1px solid {col};"
-                            f"border-radius:3px;padding:1px 2px;")
-                    else:
-                        pill.setText("╳")
-                        pill.setStyleSheet(
-                            f"color:#444;font-size:7px;font-weight:bold;"
-                            f"background:#111;border:1px solid #333;"
-                            f"border-radius:3px;padding:1px 2px;")
 
                 lbl = self._stems_lbl[ch]
                 if lbl is not None:
