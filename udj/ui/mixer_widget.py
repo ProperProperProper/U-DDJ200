@@ -110,6 +110,7 @@ class MixerWidget(QWidget):
 
         self._stem_knobs  = [[], []]   # unused but kept for tick compat
         self._stem_btns   = [[], []]   # [ch][stem_idx] → QLabel state indicator
+        self._echo_btns   = [[], []]   # [ch][stem_idx] → QLabel echo indicator
         self._eq_knobs    = [[], []]
         self._fx_knobs    = []
         self._fx_combos   = []
@@ -144,6 +145,22 @@ class MixerWidget(QWidget):
                 self._stem_btns[ch].append(pill)
                 pill_row.addWidget(pill)
             ch_col.addLayout(pill_row)
+
+            # Echo active indicators (4 pills: show which stems have echo on)
+            echo_row = QHBoxLayout()
+            echo_row.setSpacing(3)
+            self._echo_btns[ch] = []
+            for sname, scolor in _STEM_LABELS:
+                epill = QLabel("ECH")
+                epill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                epill.setFixedWidth(34)
+                epill.setStyleSheet(
+                    "color:#222;font-size:6px;font-weight:bold;"
+                    "background:#0a0a14;border:1px solid #1a1a1a;"
+                    "border-radius:3px;padding:1px 2px;")
+                self._echo_btns[ch].append(epill)
+                echo_row.addWidget(epill)
+            ch_col.addLayout(echo_row)
             top_row.addLayout(ch_col)
             if ch == 0:
                 top_row.addStretch(2)
@@ -351,6 +368,24 @@ class MixerWidget(QWidget):
                             f"color:#444;font-size:7px;font-weight:bold;"
                             f"background:#111;border:1px solid #333;"
                             f"border-radius:3px;padding:1px 2px;")
+
+                # Echo pills
+                echo_stems = getattr(deck, '_echo_stems', set())
+                for i, sname in enumerate(_SNAMES):
+                    if i >= len(self._echo_btns[ch]):
+                        continue
+                    epill = self._echo_btns[ch][i]
+                    col = _STEM_COLORS.get(sname, "#888")
+                    if sname in echo_stems:
+                        epill.setStyleSheet(
+                            f"color:#000;font-size:6px;font-weight:bold;"
+                            f"background:#ff8800;border:1px solid #ff8800;"
+                            f"border-radius:3px;padding:1px 2px;")
+                    else:
+                        epill.setStyleSheet(
+                            "color:#222;font-size:6px;font-weight:bold;"
+                            "background:#0a0a14;border:1px solid #1a1a1a;"
+                            "border-radius:3px;padding:1px 2px;")
 
                 lbl = self._stems_lbl[ch]
                 if lbl is not None:

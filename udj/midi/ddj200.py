@@ -405,6 +405,14 @@ class DDJ200:
                     if self._shift[d]:
                         self.engine.mixer.set_fx_type(d, "ECHO")
                         self.engine.mixer.set_fx_raw(d, 110)  # ~86% depth — long echo tail
+                        # Track which stems have echo for UI display
+                        if not hasattr(self.engine.deck(d), '_echo_stems'):
+                            self.engine.deck(d)._echo_stems = set()
+                        echo_set = self.engine.deck(d)._echo_stems
+                        if name in echo_set:
+                            echo_set.discard(name)
+                        else:
+                            echo_set.add(name)
                     return
 
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:
