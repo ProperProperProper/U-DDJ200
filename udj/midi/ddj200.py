@@ -417,16 +417,6 @@ class DDJ200:
                             deck.toggle_stem(name)
                             active = name in deck.active_stems
                             self._send(PAD_N[d], bottom_note, LED_ON if active else LED_OFF)
-                        # Shift + stem pad = echo out (not on bass — echo on bass sounds bad)
-                        if self._shift[d] and name != "bass":
-                            self.engine.mixer.set_fx_type(d, "ECHO")
-                            self.engine.mixer.set_fx_raw(d, 110)
-                            if not hasattr(deck, '_echo_stems'):
-                                deck._echo_stems = set()
-                            if name in deck._echo_stems:
-                                deck._echo_stems.discard(name)
-                            else:
-                                deck._echo_stems.add(name)
                     return
 
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:
