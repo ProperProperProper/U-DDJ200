@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v10"  # v10: transient suppressor for other, tighter HP/LP, vocal HP 180 Hz, drum sub +4 dB
+STEMS_VERSION = "v11"  # v11: cross-stem drum bleed subtraction from vocals (hi-hat removal)
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -313,6 +313,14 @@ def _post_process_stems(raw: dict[str, np.ndarray], sr: int,
         result["guitar"] = _process_guitar(raw["guitar"], sr)
     if "piano" in raw:
         result["piano"]  = _process_piano(raw["piano"],  sr)
+
+    # Cross-stem bleed correction — remove drum content from vocals.
+    # Hi-hats and cymbals (>4 kHz, fast transients) bleed heavily into the
+    # demucs vocals stem. Subtract a controlled fraction of the processed
+    # drums high-frequency content to clean the vocals stem.
+    if "drums" in result and "vocals" in result:
+        result["vocals"] = _subtract_drum_bleed_from_vocals(
+            result["vocals"], result["drums"], sr)
 
     # Level calibration: scale each stem so their RMS sum matches the original
     result = _calibrate_levels(result, orig)
@@ -694,6 +702,56 @@ def _process_piano(audio: np.ndarray, sr: int) -> np.ndarray:
     a64[:, 1] += w_R * warm_gain
 
     return a64.astype(np.float32)
+
+
+def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,
+                                      sr: int) -> np.ndarray:
+    """
+    Remove hi-hat and cymbal bleed from the vocals stem.
+
+    Demucs consistently leaks high-frequency drum content (hi-hats, cymbals,
+    snare transients) into vocals. For techno vocals (short samples, stabs)
+    this is especially noticeable — the vocal stem sounds like a drum mix.
+
+    Approach: spectral subtraction of the drums stem above 3 kHz.
+    - Filter both stems with a high-pass at 3 kHz (the hat/cymbal range)
+    - Subtract alpha × drums_hi from vocals_hi
+    - Reconstruct: vocals_lo (below 3kHz, untouched) + corrected_hi
+
+    alpha=0.6 — aggressive but avoids over-subtraction artefacts.
+    Uses Wiener-style soft floor: never subtracts more than the vocals signal
+    itself to avoid phase inversion clicks.
+    """
+    from scipy.signal import sosfilt, butter
+    nyq = sr / 2
+    xover = min(3000.0 / nyq, 0.99)
+
+    sos_hp = butter(8, xover, "high", output="sos")
+    sos_lp = butter(8, xover, "low",  output="sos")
+
+    voc64  = vocals.astype(np.float64)
+    drm64  = drums.astype(np.float64)
+
+    # Split both stems at 3 kHz
+    voc_lo = np.stack([sosfilt(sos_lp, voc64[:, 0]),
+                       sosfilt(sos_lp, voc64[:, 1])], axis=1)
+    voc_hi = np.stack([sosfilt(sos_hp, voc64[:, 0]),
+                       sosfilt(sos_hp, voc64[:, 1])], axis=1)
+    drm_hi = np.stack([sosfilt(sos_hp, drm64[:, 0]),
+                       sosfilt(sos_hp, drm64[:, 1])], axis=1)
+
+    # Spectral subtraction with soft floor (never go below zero energy)
+    alpha = 0.6
+    corrected_hi = voc_hi - alpha * drm_hi
+    # Soft floor: clip to preserve sign but prevent over-subtraction
+    corrected_hi = np.where(
+        np.abs(corrected_hi) < np.abs(voc_hi) * 0.1,
+        voc_hi * 0.1,   # floor at 10% of original to avoid total silence artefacts
+        corrected_hi)
+
+    result = (voc_lo + corrected_hi).astype(np.float32)
+    print(f"[Stems] drum bleed subtracted from vocals (alpha={alpha}, xover=3kHz)")
+    return result
 
 
 def _detect_vocal_presence(vocals: np.ndarray, orig: np.ndarray) -> bool:
