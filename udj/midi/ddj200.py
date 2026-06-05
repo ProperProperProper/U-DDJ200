@@ -424,11 +424,14 @@ class DDJ200:
                         if name:
                             if deck.stems_ready:
                                 deck.toggle_stem(name)
-                                active = name in deck.active_stems
-                                vel = LED_ON if active else LED_OFF
+                                # Use fade TARGET not active_stems — toggle_stem keeps
+                                # the stem in active_stems during the 10ms fade out,
+                                # so active_stems check would always return True right
+                                # after muting. Target=1.0 means unmuting, 0.0 = muting.
+                                target = deck._stem_fade_target.get(name, 1.0)
+                                vel = LED_ON if target > 0.5 else LED_OFF
                             else:
                                 vel = LED_OFF
-                            # Send to all 3 channel addresses — hardware may be in any mode
                             self._send(PAD_N[d], top_idx,            vel)
                             self._send(PAD_N[d], BL_BASE + top_idx,  vel)
                             self._send(PAD_N[d], SP_BASE + top_idx,  vel)
@@ -700,7 +703,8 @@ class DDJ200:
                     _pad_led(i, LED_OFF)
             else:
                 for i, name in enumerate(_stem_order):
-                    _pad_led(i, LED_ON if name in deck.active_stems else LED_OFF)
+                    target = deck._stem_fade_target.get(name, 1.0)
+                    _pad_led(i, LED_ON if target > 0.5 else LED_OFF)
                 echo_active = getattr(deck, '_echo_active', [False, False, False])
                 for i in range(3):
                     _pad_led(4 + i, LED_ON if echo_active[i] else LED_OFF)
