@@ -185,79 +185,115 @@ class MixerWidget(QWidget):
 
         root.addWidget(_sep())
 
-        # ── CH labels + PFL ───────────────────────────────────
-        pfl_row = QHBoxLayout()
-        pfl_row.setSpacing(0)
-        pfl_row.addStretch(1)
-        pfl_row.addWidget(_lbl("CH 1", "#00c8ff", 9, True))
+        # ── CH 1 / CH 2 channel controls (PFL + vol) ──────────
+        ch_row = QHBoxLayout()
+        ch_row.setSpacing(6)
+
         for ch in range(2):
-            b = QPushButton("PFL")
+            col = "#00c8ff" if ch == 0 else "#ff7a01"
+            label = "CH 1" if ch == 0 else "CH 2"
+            ch_col = QVBoxLayout()
+            ch_col.setSpacing(3)
+
+            # Channel label — large and bright
+            ch_lbl = QLabel(label)
+            ch_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ch_lbl.setStyleSheet(
+                f"color:{col};font-size:14px;font-weight:bold;"
+                f"background:#0e0e18;border:1px solid {col}44;"
+                f"border-radius:4px;padding:2px 8px;")
+            ch_col.addWidget(ch_lbl)
+
+            # PFL button
+            b = QPushButton("CUE")
             b.setCheckable(True)
             b.setObjectName("PflButton")
-            b.setFixedSize(40, 22)
+            b.setFixedHeight(24)
+            b.setStyleSheet(
+                f"QPushButton{{background:#111;border:1px solid #333;"
+                f"border-radius:4px;color:#555;font-size:10px;font-weight:bold;}}"
+                f"QPushButton:checked{{background:{col};border:1px solid {col};"
+                f"color:#000;}}")
             b.toggled.connect(lambda on, c=ch: operator.setitem(self.mixer.pfl, c, on))
-            if ch == 0:
-                pfl_row.addSpacing(6)
-            pfl_row.addWidget(b)
             self._pfl_btns.append(b)
-        pfl_row.addSpacing(6)
-        pfl_row.addWidget(_lbl("CH 2", "#ff7a01", 9, True))
-        pfl_row.addStretch(1)
-        root.addLayout(pfl_row)
+            ch_col.addWidget(b)
+
+            # Vol readout
+            vol_lbl = QLabel("0.0 dB")
+            vol_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vol_lbl.setStyleSheet(
+                f"color:{col};font-family:'Courier New';"
+                f"font-size:10px;font-weight:bold;")
+            ch_col.addWidget(vol_lbl)
+
+            ch_row.addLayout(ch_col, 1)
+            if not hasattr(self, '_vol_lbl'):
+                self._vol_lbl = [None, None]
+            self._vol_lbl[ch] = vol_lbl
+
+            if ch == 0:
+                # Master column in the middle
+                master_col_layout = QVBoxLayout()
+                master_col_layout.setSpacing(3)
+                master_lbl = QLabel("MASTER")
+                master_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                master_lbl.setStyleSheet(
+                    "color:#aaa;font-size:11px;font-weight:bold;"
+                    "background:#1a1a1a;border:1px solid #444;"
+                    "border-radius:4px;padding:2px 8px;")
+                self._master_vol_lbl = QLabel("−∞ dB")
+                self._master_vol_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._master_vol_lbl.setStyleSheet(
+                    "color:#ccc;font-family:'Courier New';"
+                    "font-size:10px;font-weight:bold;")
+
+                # Phrase Sync button — single, in the middle
+                phrase_btn = QPushButton("⌛ PHRASE\nSYNC")
+                phrase_btn.setFixedHeight(36)
+                phrase_btn.setStyleSheet(
+                    "QPushButton{color:#888;background:#0e0e18;border:1px solid #444;"
+                    "border-radius:4px;font-size:8px;font-weight:bold;}"
+                    "QPushButton:pressed{color:#cc99ff;background:#1a1030;"
+                    "border:1px solid #8844cc;}")
+                phrase_btn.pressed.connect(self._on_phrase_sync)
+
+                master_col_layout.addWidget(master_lbl)
+                master_col_layout.addWidget(self._master_vol_lbl)
+                master_col_layout.addWidget(phrase_btn)
+                ch_row.addLayout(master_col_layout, 1)
+
+        root.addLayout(ch_row)
         root.addWidget(_sep())
 
-        # ── Volume values row (dB readout, no faders) ─────────
-        vol_row = QHBoxLayout()
-        vol_row.setSpacing(4)
-        self._vol_lbl = [QLabel("0.0 dB"), QLabel("0.0 dB")]
-        for ch, lbl in enumerate(self._vol_lbl):
-            color = "#00c8ff" if ch == 0 else "#ff7a01"
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(
-                f"color:{color};font-family:'Courier New';"
-                f"font-size:11px;font-weight:bold;")
-        vol_row.addWidget(self._vol_lbl[0], 1)
-        vol_row.addWidget(_lbl("VOL", "#333", 7), 0)
-        vol_row.addWidget(self._vol_lbl[1], 1)
-        root.addLayout(vol_row)
-
-        # ── Three VU meters: CH1 | MASTER | CH2 (expanding) ───
+        # ── Three VU meters: CH1 | MASTER | CH2 ───────────────
         vu_section = QHBoxLayout()
         vu_section.setSpacing(6)
         vu_section.setContentsMargins(0, 0, 0, 0)
 
-        VU_H = 130   # fixed height for the entire VU row
+        VU_H = 110
 
-        # CH1 compact VU
         ch1_col = QVBoxLayout()
         ch1_col.setSpacing(2)
-        ch1_col.addWidget(_lbl("CH1", "#00c8ff", 7))
         self._vu_ch1 = VUMeter(compact=True, stereo=False)
-        self._vu_ch1.setFixedHeight(VU_H - 14)
+        self._vu_ch1.setFixedHeight(VU_H)
         ch1_col.addWidget(self._vu_ch1)
         vu_section.addLayout(ch1_col, 1)
 
-        # Master VU — stereo, with dBFS scale
-        master_col = QVBoxLayout()
-        master_col.setSpacing(2)
-        master_col.addWidget(_lbl("MASTER", "#888", 7, True))
+        master_vu_col = QVBoxLayout()
+        master_vu_col.setSpacing(2)
         self._vu_master = VUMeter(compact=False, stereo=True)
-        self._vu_master.setFixedHeight(VU_H - 14)
-        master_col.addWidget(self._vu_master)
-        vu_section.addLayout(master_col, 2)
+        self._vu_master.setFixedHeight(VU_H)
+        master_vu_col.addWidget(self._vu_master)
+        vu_section.addLayout(master_vu_col, 2)
 
-        # CH2 compact VU
         ch2_col = QVBoxLayout()
         ch2_col.setSpacing(2)
-        ch2_col.addWidget(_lbl("CH2", "#ff7a01", 7))
         self._vu_ch2 = VUMeter(compact=True, stereo=False)
-        self._vu_ch2.setFixedHeight(VU_H - 14)
+        self._vu_ch2.setFixedHeight(VU_H)
         ch2_col.addWidget(self._vu_ch2)
         vu_section.addLayout(ch2_col, 1)
 
         root.addLayout(vu_section, 0)
-        root.addWidget(_sep())
-
         root.addWidget(_sep())
 
         # ── Crossfader ────────────────────────────────────────
@@ -279,6 +315,16 @@ class MixerWidget(QWidget):
     def _on_xf(self, pos: float):
         self.mixer.crossfader = pos
 
+    def _on_phrase_sync(self):
+        if self.engine:
+            # Phrase-sync whichever deck is the follower
+            for d in range(2):
+                if self.engine.deck(d).sync_follower:
+                    self.engine.phrase_sync(d)
+                    return
+            # No follower set — sync deck 1 to deck 0
+            self.engine.phrase_sync(1)
+
     def _on_trans_fx(self, active: bool):
         """Transition FX — deep filter close across both channels."""
         for ch in range(2):
@@ -294,6 +340,7 @@ class MixerWidget(QWidget):
         # Volume dB readouts
         for ch in range(2):
             self._vol_lbl[ch].setText(_db(self.mixer.volumes[ch]) + " dB")
+        self._master_vol_lbl.setText(_db(self.mixer.master_vol) + " dB")
 
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
