@@ -22,13 +22,6 @@ a = Analysis(
         'onnxruntime',
         'onnxruntime.capi',
         'onnxruntime.capi.onnxruntime_inference_collection',
-        # anthropic SDK (Claude stem analysis)
-        'anthropic',
-        'anthropic.types',
-        # matplotlib (spectrogram generation for Claude vision)
-        'matplotlib',
-        'matplotlib.pyplot',
-        'matplotlib.backends.backend_agg',
         # sounddevice / PortAudio
         'sounddevice',
         # soundfile / libsndfile
