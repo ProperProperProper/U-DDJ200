@@ -238,11 +238,12 @@ class DeckWidget(QWidget):
         _BL_LABELS  = ["1/4","1/2","1","2","4","8","16"]
         _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4"]
         _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0]
-        # Stem toggle pads — 4 only, pads 5-7 unused in STEMS mode
-        _STM_LABELS = ["DRM","BASS","SYNTH","VOC", "","",""]
-        _STM_NAMES  = ["drums","bass","other","vocals","","",""]
-        _STM_COLORS = ["#ff4466","#ff9900","#44aaff","#aa44ff",
-                       "#222","#222","#222"]
+        # Top row: mute toggles. Bottom row: echo pads with FX type cycling.
+        # Order: VOC | BASS | SYNTH | DRM  /  VOC ECH | BSS ECH | DRM ECH
+        _STM_LABELS = ["VOC","BASS","SYNTH","DRM",  "VOC\nECH","BSS\nECH","DRM\nECH"]
+        _STM_NAMES  = ["vocals","bass","other","drums","vocals","bass","drums"]
+        _STM_COLORS = ["#aa44ff","#ff9900","#44aaff","#ff4466",
+                       "#aa44ff","#ff9900","#ff4466"]
 
         self._mode_btns: dict[str, QPushButton] = {}
         self._pad_btns:  list[QPushButton] = []   # 7 visible pads for current mode
@@ -311,6 +312,8 @@ class DeckWidget(QWidget):
             lambda _: _main_thread(self._on_stems_ready)
         self.deck.on_hot_cue_changed = \
             lambda *_: _main_thread(self._refresh_pads)
+        # Render pads immediately with current mode (STEMS by default)
+        _main_thread(self._refresh_pads)
 
     def _on_track_loaded(self):
         d = self.deck
@@ -368,10 +371,14 @@ class DeckWidget(QWidget):
                 self.deck.beat_jump(self._bj_bars[n])
         elif mode == "STEMS":
             if n < 4:
+                # Top row: mute toggle
                 name = self._stm_names[n] if n < len(self._stm_names) else None
                 if name and self.deck.stems_ready:
                     self.deck.toggle_stem(name); self._refresh_pads()
-            # Pads 5-7 unused in STEMS mode
+            elif 4 <= n <= 6:
+                # Bottom row: echo toggle (on-screen only — hardware handled in MIDI)
+                echo_idx = n - 4
+                self._toggle_echo(echo_idx)
 
     def _pad_release(self, n: int):
         pass  # no release actions currently needed
@@ -379,6 +386,36 @@ class DeckWidget(QWidget):
     def _pad_right_click(self, n: int):
         if self._pad_mode == "HOT CUE":
             self.deck.hotcue_clear(n); self._refresh_pads()
+
+    _ECHO_FX_CYCLE = ["ECHO", "DELAY", "REVERB", "FILTER"]
+
+    def _toggle_echo(self, echo_idx: int, cycle_fx: bool = False):
+        """Toggle echo pad on/off, or cycle its FX type (cycle_fx=True)."""
+        engine = getattr(self, '_engine', None)
+        if engine is None:
+            return
+        deck_idx = self.deck.deck_id
+        if not hasattr(self.deck, '_echo_active'):
+            self.deck._echo_active  = [False, False, False]
+            self.deck._echo_fx_type = ["ECHO", "ECHO", "ECHO"]
+        if cycle_fx:
+            cur = self._ECHO_FX_CYCLE.index(self.deck._echo_fx_type[echo_idx]) \
+                  if self.deck._echo_fx_type[echo_idx] in self._ECHO_FX_CYCLE else 0
+            self.deck._echo_fx_type[echo_idx] = self._ECHO_FX_CYCLE[(cur + 1) % len(self._ECHO_FX_CYCLE)]
+            # If this pad is active, apply the new FX type immediately
+            if self.deck._echo_active[echo_idx]:
+                engine.mixer.set_fx_type(deck_idx, self.deck._echo_fx_type[echo_idx])
+        else:
+            was = self.deck._echo_active[echo_idx]
+            # Only one echo active at a time
+            self.deck._echo_active = [False, False, False]
+            self.deck._echo_active[echo_idx] = not was
+            if self.deck._echo_active[echo_idx]:
+                engine.mixer.set_fx_type(deck_idx, self.deck._echo_fx_type[echo_idx])
+                engine.mixer.set_fx_raw(deck_idx, 100)
+            else:
+                engine.mixer.set_fx_raw(deck_idx, 64)  # centre = bypass
+        self._refresh_pads()
 
     def _pfx_press(self, n: int): pass
     def _pfx_release(self, n: int): pass
@@ -481,34 +518,48 @@ class DeckWidget(QWidget):
                 btn.setText(lbl); btn.setChecked(False)
 
             elif mode == "STEMS":
-                col   = self._stm_colors[i] if i < len(self._stm_colors) else "#222"
-                lbl   = self._stm_labels[i] if i < len(self._stm_labels) else ""
-                name  = self._stm_names[i]  if i < len(self._stm_names)  else ""
+                col  = self._stm_colors[i] if i < len(self._stm_colors) else "#222"
+                name = self._stm_names[i]  if i < len(self._stm_names)  else ""
                 ready = self.deck.stems_ready
 
-                if i >= 4 or not name:
-                    # Unused pads — blank and dark
-                    btn.setStyleSheet(
-                        "QPushButton{background:#0a0a12;border:1px solid #1a1a22;"
-                        "border-radius:6px;color:#111;}"
-                        "QPushButton:pressed{background:#0a0a12;}")
-                    btn.setText(""); btn.setChecked(False)
-                else:
+                if i < 4:
+                    # Top row: mute toggles — VOC BASS SYNTH DRM
+                    lbl    = self._stm_labels[i]
                     active = name in self.deck.active_stems if ready else True
                     if active:
-                        # ON — filled bright, very clear
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col};border:2px solid {col};"
                             f"border-radius:6px;color:#000;font-size:10px;font-weight:bold;}}"
                             f"QPushButton:pressed{{background:{col}cc;}}")
                     else:
-                        # OFF — dark background, dim coloured border, struck-through text
                         btn.setStyleSheet(
                             f"QPushButton{{background:#111;border:2px solid {col}55;"
                             f"border-radius:6px;color:{col}66;font-size:10px;font-weight:bold;"
                             f"text-decoration:line-through;}}"
                             f"QPushButton:pressed{{background:#1a1a22;}}")
                     btn.setText(lbl); btn.setChecked(active)
+
+                else:
+                    # Bottom row: echo pads — VOC ECH / BSS ECH / DRM ECH
+                    echo_idx = i - 4  # 0, 1, 2
+                    echo_active = getattr(self.deck, '_echo_active', [False]*3)
+                    echo_fx     = getattr(self.deck, '_echo_fx_type', ["ECHO"]*3)
+                    is_on = echo_active[echo_idx] if echo_idx < len(echo_active) else False
+                    fx_name = echo_fx[echo_idx] if echo_idx < len(echo_fx) else "ECHO"
+                    # Label: stem name + FX type
+                    _echo_stem_label = {0:"VOC",1:"BSS",2:"DRM"}
+                    lbl = f"{_echo_stem_label.get(echo_idx,'?')}\n{fx_name[:3]}"
+                    if is_on:
+                        btn.setStyleSheet(
+                            f"QPushButton{{background:{col};border:2px solid {col};"
+                            f"border-radius:6px;color:#000;font-size:8px;font-weight:bold;}}"
+                            f"QPushButton:pressed{{background:{col}cc;}}")
+                    else:
+                        btn.setStyleSheet(
+                            f"QPushButton{{background:#111;border:1px solid {col}55;"
+                            f"border-radius:6px;color:{col}88;font-size:8px;font-weight:bold;}}"
+                            f"QPushButton:pressed{{background:{col}33;}}")
+                    btn.setText(lbl); btn.setChecked(is_on)
 
 
     def _key_shift(self, delta: int, reset: bool = False):

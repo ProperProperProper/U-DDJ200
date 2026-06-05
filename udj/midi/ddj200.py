@@ -384,8 +384,64 @@ class DDJ200:
                 return
 
             if status == PAD_N[d] and val:
-                # Bottom row pad 8 (rightmost) = cycle pad mode — always, any mode.
-                # HOT CUE: note 0x07 | BEAT LOOP: BL_BASE+7 | others: SP_BASE+7
+                # ── STEMS software mode: full override of top+bottom rows ─────
+                if mode == "STEMS":
+                    # Top row (pads 1-4): stem mute toggles VOC/BASS/SYNTH/DRM
+                    top_idx = None
+                    if 0x00 <= note <= 0x03:            top_idx = note
+                    elif BL_BASE <= note <= BL_BASE+3:  top_idx = note - BL_BASE
+                    elif SP_BASE <= note <= SP_BASE+3:  top_idx = note - SP_BASE
+
+                    # Bottom row (pads 5-7): echo toggles / Shift = cycle FX type
+                    bot_idx = None
+                    if 0x04 <= note <= 0x06:                  bot_idx = note - 0x04
+                    elif BL_BASE+4 <= note <= BL_BASE+6:      bot_idx = note - BL_BASE - 4
+                    elif SP_BASE+4 <= note <= SP_BASE+6:      bot_idx = note - SP_BASE - 4
+
+                    _STEM_MAP = {0:"vocals",1:"bass",2:"other",3:"drums"}
+                    _FX_CYCLE = ["ECHO","DELAY","REVERB","FILTER"]
+                    deck = self.engine.deck(d)
+
+                    if top_idx is not None:
+                        name = _STEM_MAP.get(top_idx)
+                        if name and deck.stems_ready:
+                            deck.toggle_stem(name)
+                            active = name in deck.active_stems
+                            self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                        if self.on_pad_mode_changed:
+                            self.on_pad_mode_changed(d, mode)
+                        return
+
+                    if bot_idx is not None:
+                        if not hasattr(deck, '_echo_active'):
+                            deck._echo_active  = [False, False, False]
+                            deck._echo_fx_type = ["ECHO", "ECHO", "ECHO"]
+                        if self._shift[d]:
+                            # Shift+pad = cycle FX type for this echo pad
+                            cur = next((i for i,f in enumerate(_FX_CYCLE)
+                                        if f == deck._echo_fx_type[bot_idx]), 0)
+                            deck._echo_fx_type[bot_idx] = _FX_CYCLE[(cur+1)%len(_FX_CYCLE)]
+                            if deck._echo_active[bot_idx]:
+                                self.engine.mixer.set_fx_type(d, deck._echo_fx_type[bot_idx])
+                        else:
+                            # Toggle echo — only one active at a time
+                            was = deck._echo_active[bot_idx]
+                            deck._echo_active = [False, False, False]
+                            deck._echo_active[bot_idx] = not was
+                            if deck._echo_active[bot_idx]:
+                                self.engine.mixer.set_fx_type(d, deck._echo_fx_type[bot_idx])
+                                self.engine.mixer.set_fx_raw(d, 100)
+                            else:
+                                self.engine.mixer.set_fx_raw(d, 64)
+                            # Update LEDs
+                            for i in range(3):
+                                base = [0x04,0x05,0x06]
+                                self._send(PAD_N[d], base[i], LED_ON if deck._echo_active[i] else LED_OFF)
+                        if self.on_pad_mode_changed:
+                            self.on_pad_mode_changed(d, mode)
+                        return
+
+                # ── Pad 8 = mode cycle (all modes) ───────────────────────────
                 is_pad8 = (note == 0x07 or note == BL_BASE + 7 or note == SP_BASE + 7)
                 if is_pad8:
                     # Safe index — default to 0 if mode no longer exists in list
