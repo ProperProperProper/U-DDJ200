@@ -379,6 +379,66 @@ class AudioEngine:
         if not follower.playing:
             self._was_playing[follower_idx] = False
 
+    def phrase_sync(self, follower_idx: int):
+        """
+        Snap follower to the next upcoming PHRASE boundary in the master.
+        More musical than bar-sync for long-form techno structures — aligns
+        to 16/32-bar phrase boundaries instead of just the next bar.
+        Falls back to bar-sync if master has no phrase data.
+        """
+        follower = self.decks[follower_idx]
+        master   = next((d for d in self.decks
+                         if d is not follower and d.sync_master
+                         and d.bpm > 0 and d.audio is not None), None)
+        if master is None:
+            master = next((d for d in self.decks
+                           if d is not follower and d.playing
+                           and d.bpm > 0 and d.audio is not None), None)
+        if master is None or follower.bpm <= 0 or follower.audio is None:
+            return
+
+        sr = master.sample_rate
+
+        # Tempo-match the follower
+        master_key_ratio   = 2.0 ** (getattr(master,   'key_shift', 0) / 12.0)
+        follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
+        target_bpm = master.bpm * master.rate * master_key_ratio
+        nominal    = (target_bpm / follower.bpm) / follower_key_ratio
+        if follower.playing:
+            follower.rate = max(0.5, min(2.0, nominal))
+
+        # Find the next phrase boundary in the master
+        snap_pos = None
+        if master.phrases is not None and len(master.phrases) > 1:
+            # Next phrase boundary after master's current position
+            idx = int(np.searchsorted(master.phrases, master.position, side='right'))
+            if idx < len(master.phrases):
+                # What bar-phase does that phrase start at in follower-time?
+                master_phrase_pos = master.phrases[idx]
+                master_bar  = sr * 60.0 / max(master.bpm * master.rate, 1)
+                follower_bar = sr * 60.0 / max(follower.bpm, 1)
+                # Fraction through current master bar at that phrase boundary
+                rel = (master_phrase_pos - master.first_beat) % (master_bar * 4)
+                phase = rel / (master_bar * 4)
+                # Map same phase onto follower
+                f_rel = follower.position - follower.first_beat
+                f_bar_len = follower_bar * 4
+                f_bar_start = follower.first_beat + (int(f_rel / f_bar_len)) * f_bar_len
+                snap_pos = f_bar_start + phase * f_bar_len
+                if snap_pos < follower.position:
+                    snap_pos += f_bar_len
+
+        # Fall back to bar-snap
+        if snap_pos is None:
+            snap_pos = _snap_to_grid(master, follower, sr)
+
+        audio_len = len(follower.audio)
+        follower.position  = max(0.0, min(float(audio_len - 2), snap_pos))
+        follower.cue_point = int(follower.position)
+        print(f"[PHRASE SYNC] D{follower_idx+1} snapped to phrase boundary")
+        if not follower.playing:
+            self._was_playing[follower_idx] = False
+
     # ── Audio callback ────────────────────────────────────────
 
     def _callback(self, outdata: np.ndarray, frames: int, time, status):

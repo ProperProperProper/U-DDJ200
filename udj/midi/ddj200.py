@@ -83,7 +83,10 @@ CC_EQ_LOW    = 0x0F   # → stem blend pair 2 (LEAD↔PAD)
 CC_CFX       = [0x17, 0x18]   # Color FX (Super Knob) — channel 0xB6, confirmed from Mixxx DDJ-200 mapping
 CC_XF_MSB    = 0x1F
 CC_XF_LSB    = 0x3F
-CC_MASTER_HPS = 0x63          # headphone master
+CC_MASTER_VOL = 0x63          # master output level (on 0xB6)
+CC_HP_MIX     = 0x06          # headphone CUE/MASTER blend (on 0xB6)
+NOTE_PHRASE_SYNC = 0x58       # Shift+SYNC = phrase sync (overrides loop-in)
+NOTE_TRANS_FX    = 0x47       # Beat FX on button = transition FX (MASTER ch 0x96)
 
 # Beat loop pad notes
 BL_BASE = 0x60   # pads 0x60–0x67
@@ -256,9 +259,8 @@ class DDJ200:
                 if note == NOTE_SYNC and val:
                     deck = self.engine.deck(d)
                     if self._shift[d]:
-                        # Shift+Sync: arm loop start (rekordbox Loop In)
-                        deck.beat_quantize_loop_start()
-                        self._loop_recording[d] = True
+                        # Shift+Sync: phrase sync — snap to next phrase boundary
+                        self.engine.phrase_sync(d)
                         self._send(CH[d], NOTE_SYNC, LED_ON)
                         return
                     if self._loop_recording[d]:
@@ -365,7 +367,7 @@ class DDJ200:
                     return
 
 
-        # ── Crossfader + CFX (all on 0xB6) ───────────────────
+        # ── Master channel (0xB6) — crossfader, CFX, master vol, headphone mix ──
         if status == 0xB6:
             if note == CC_XF_MSB:
                 self._xf_msb = val; return
@@ -378,6 +380,34 @@ class DDJ200:
                 return
             if note == CC_CFX[1]:
                 self.engine.mixer.set_fx_raw(1, val)
+                return
+            if note == CC_MASTER_VOL:
+                # Master output level — p² taper same as channel faders
+                p = val / 127.0
+                self.engine.mixer.master_vol = p * p
+                return
+            if note == CC_HP_MIX:
+                # Headphone CUE/MASTER blend — stored for UI display
+                self.engine.mixer.headphone_mix = val / 127.0
+                return
+
+        # ── MASTER section (0x96) — Beat FX / Transition FX ──────────────────
+        if status == 0x96 and val:
+            if note == NOTE_TRANS_FX:
+                # Transition FX: beat-synced filter sweep + echo on both channels
+                # Toggles on/off — LED reflects state
+                self._trans_fx_active = not getattr(self, '_trans_fx_active', False)
+                if self._trans_fx_active:
+                    for d in range(2):
+                        self.engine.mixer.set_fx_type(d, "FILTER")
+                        self.engine.mixer.set_fx_raw(d, 20)   # deep filter close
+                    self._send(0x96, note, LED_ON)
+                    print("[FX] Transition FX ON")
+                else:
+                    for d in range(2):
+                        self.engine.mixer.set_fx_raw(d, 64)   # bypass
+                    self._send(0x96, note, LED_OFF)
+                    print("[FX] Transition FX OFF")
                 return
 
         # ── Performance pads — mode-aware ─────────────────────

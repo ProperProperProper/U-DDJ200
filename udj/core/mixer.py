@@ -750,7 +750,8 @@ class Mixer:
         self.sample_rate  = sample_rate
         self.volumes      = [1.0] * num_channels
         self.crossfader   = 0.0
-        self.master_vol   = 0.85
+        self.master_vol     = 0.85
+        self.headphone_mix  = 0.0   # 0.0 = full CUE/PFL, 1.0 = full master
         self.eqs = [BiquadEQ(sample_rate) for _ in range(num_channels)]
         self.fx  = [FilterEffect(sample_rate) for _ in range(num_channels)]
         self.pfl     = [False] * num_channels
