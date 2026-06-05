@@ -271,8 +271,6 @@ def _separate_demucs(file_path: str, target_sr: int,
         print("[Stems] guitar+piano derived via DSP split of 'other'")
 
     # Replace demucs vocals with MelBand Roformer if available — state-of-art isolation.
-    # Roformer is trained specifically for clean vocal extraction and significantly
-    # outperforms demucs for short vocal samples (techno stabs, vocal chops).
     roformer_vocals = _roformer_vocals(file_path, target_sr, n)
     if roformer_vocals is not None:
         raw_stems["vocals"] = roformer_vocals
@@ -280,8 +278,22 @@ def _separate_demucs(file_path: str, target_sr: int,
     else:
         print("[Stems] Roformer unavailable — using demucs vocals")
 
-    # Post-process each stem, then calibrate levels
-    processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
+    # Claude stem analysis: send spectrograms + metrics to claude-sonnet-4-6,
+    # get back per-stem parameter adjustments tuned to this specific track.
+    # Falls back to fixed techno post-processing if API unavailable.
+    try:
+        from .stem_analyst import analyse_stems_with_claude, apply_adjustments
+        adj = analyse_stems_with_claude(raw_stems, orig, target_sr, track_meta)
+        if adj:
+            print("[Stems] applying Claude-recommended adjustments")
+            processed = apply_adjustments(raw_stems, target_sr, adj)
+            processed = _calibrate_levels(processed, orig)
+        else:
+            print("[Stems] Claude analysis unavailable — using fixed techno post-processing")
+            processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
+    except Exception as e:
+        print(f"[Stems] stem_analyst error ({e}) — using fixed post-processing")
+        processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
 
     # Detect instrumental / vocal-absent tracks → return flag alongside stems
     processed["_vocal_present"] = _detect_vocal_presence(
