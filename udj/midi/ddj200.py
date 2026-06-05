@@ -157,6 +157,19 @@ class DDJ200:
 
         self._connected = True
         self._init_leds()
+
+        # Hook on_stems_ready so hardware LEDs update when stems finish loading
+        for d in range(2):
+            orig = self.engine.deck(d).on_stems_ready
+            def _make_hook(deck_idx, orig_cb):
+                def hook(x):
+                    if orig_cb:
+                        orig_cb(x)
+                    if self._pad_mode[deck_idx] == "STEMS":
+                        self._refresh_pad_leds(deck_idx)
+                return hook
+            self.engine.deck(d).on_stems_ready = _make_hook(d, orig)
+
         print(f"[DDJ-200] connected")
         return True
 
@@ -404,10 +417,14 @@ class DDJ200:
 
                     if top_idx is not None:
                         name = _STEM_MAP.get(top_idx)
-                        if name and deck.stems_ready:
-                            deck.toggle_stem(name)
-                            active = name in deck.active_stems
-                            self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                        if name:
+                            if deck.stems_ready:
+                                deck.toggle_stem(name)
+                                active = name in deck.active_stems
+                                self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                            else:
+                                # Not ready — flash off to signal unavailable
+                                self._send(PAD_N[d], note, LED_OFF)
                         if self.on_pad_mode_changed:
                             self.on_pad_mode_changed(d, mode)
                         return
@@ -658,16 +675,21 @@ class DDJ200:
                 self._send(PAD_N[d], BL_BASE + i, LED_ON if lit else LED_OFF)
         elif mode == "STEMS":
             deck = self.engine.deck(d)
-            # Top row (notes 0x00-0x03): VOC BASS DRM SYNTH mute state
             _stem_order = ["vocals", "bass", "drums", "other"]
-            for i, name in enumerate(_stem_order):
-                active = (name in deck.active_stems) if deck.stems_ready else True
-                self._send(PAD_N[d], i, LED_ON if active else LED_OFF)
-            # Bottom row (notes 0x04-0x06): echo pad state
-            echo_active = getattr(deck, '_echo_active', [False, False, False])
-            for i in range(3):
-                self._send(PAD_N[d], 0x04 + i,
-                           LED_ON if echo_active[i] else LED_OFF)
+            if not deck.stems_ready:
+                # Stems not loaded yet — show all dark so user knows to wait
+                for i in range(7):
+                    self._send(PAD_N[d], i, LED_OFF)
+            else:
+                # Top row (0x00-0x03): stem mute state
+                for i, name in enumerate(_stem_order):
+                    active = name in deck.active_stems
+                    self._send(PAD_N[d], i, LED_ON if active else LED_OFF)
+                # Bottom row (0x04-0x06): echo pad state
+                echo_active = getattr(deck, '_echo_active', [False, False, False])
+                for i in range(3):
+                    self._send(PAD_N[d], 0x04 + i,
+                               LED_ON if echo_active[i] else LED_OFF)
 
     def _eq_apply(self, deck: int, band: int, val: int) -> bool:
         """
