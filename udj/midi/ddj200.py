@@ -658,10 +658,16 @@ class DDJ200:
                 self._send(PAD_N[d], BL_BASE + i, LED_ON if lit else LED_OFF)
         elif mode == "STEMS":
             deck = self.engine.deck(d)
-            for i, name in enumerate(STEM_NAMES):
-                if deck.stems_ready:
-                    active = name in deck.active_stems
-                    self._send(PAD_N[d], SP_BASE + i, LED_ON if active else LED_OFF)
+            # Top row (notes 0x00-0x03): VOC BASS DRM SYNTH mute state
+            _stem_order = ["vocals", "bass", "drums", "other"]
+            for i, name in enumerate(_stem_order):
+                active = (name in deck.active_stems) if deck.stems_ready else True
+                self._send(PAD_N[d], i, LED_ON if active else LED_OFF)
+            # Bottom row (notes 0x04-0x06): echo pad state
+            echo_active = getattr(deck, '_echo_active', [False, False, False])
+            for i in range(3):
+                self._send(PAD_N[d], 0x04 + i,
+                           LED_ON if echo_active[i] else LED_OFF)
 
     def _eq_apply(self, deck: int, band: int, val: int) -> bool:
         """
