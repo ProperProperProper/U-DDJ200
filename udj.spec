@@ -17,6 +17,16 @@ a = Analysis(
         ('dev_inspect_stems.py', '.'),
     ],
     hiddenimports=[
+        # anthropic SDK (Claude stem inspection)
+        'anthropic',
+        'anthropic.types',
+        'anthropic._client',
+        # matplotlib (spectrogram generation for stem inspection)
+        'matplotlib',
+        'matplotlib.pyplot',
+        'matplotlib.backends.backend_agg',
+        'matplotlib.figure',
+        'matplotlib.gridspec',
         # audio-separator / onnxruntime (Roformer vocal model)
         'audio_separator',
         'audio_separator.separator',
@@ -75,7 +85,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib', 'IPython', 'pytest'],
+    excludes=['tkinter', 'IPython', 'pytest'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
