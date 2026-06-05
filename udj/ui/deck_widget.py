@@ -238,9 +238,11 @@ class DeckWidget(QWidget):
         _BL_LABELS  = ["1/4","1/2","1","2","4","8","16"]
         _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4"]
         _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0]
-        _STM_LABELS = ["VOC","DRM","BSS","MLY","VOC►","DRM►","BSS►"]
-        _STM_COLORS = ["#aa44ff","#ff4466","#ff9900","#44aaff",
-                       "#aa44ff","#ff4466","#ff9900"]
+        # Logical order: DRM BASS SYNTH VOC | SOLO DRM SOLO BASS SOLO VOC
+        _STM_LABELS = ["DRM","BASS","SYNTH","VOC", "SOLO\nDRM","SOLO\nBSS","SOLO\nVOC"]
+        _STM_NAMES  = ["drums","bass","other","vocals","drums","bass","vocals"]
+        _STM_COLORS = ["#ff4466","#ff9900","#44aaff","#aa44ff",
+                       "#ff4466","#ff9900","#aa44ff"]
 
         self._mode_btns: dict[str, QPushButton] = {}
         self._pad_btns:  list[QPushButton] = []   # 7 visible pads for current mode
@@ -251,6 +253,7 @@ class DeckWidget(QWidget):
         self._bl_labels  = _BL_LABELS
         self._bj_labels  = _BJ_LABELS
         self._stm_labels = _STM_LABELS
+        self._stm_names  = _STM_NAMES
         self._stm_colors = _STM_COLORS
 
         PAD_W, PAD_H = 56, 40
@@ -364,16 +367,17 @@ class DeckWidget(QWidget):
             if n < len(self._bj_bars):
                 self.deck.beat_jump(self._bj_bars[n])
         elif mode == "STEMS":
-            stem_names = ["vocals","drums","bass","other"]
-            if n < 4 and self.deck.stems_ready:
-                self.deck.toggle_stem(stem_names[n]); self._refresh_pads()
-            elif 4 <= n < 7 and self.deck.stems_ready:
-                self._stem_solo_start(stem_names[n - 4])
+            name = self._stm_names[n] if n < len(self._stm_names) else None
+            if name and n < 4 and self.deck.stems_ready:
+                self.deck.toggle_stem(name); self._refresh_pads()
+            elif name and 4 <= n < 7 and self.deck.stems_ready:
+                self._stem_solo_start(name)
 
     def _pad_release(self, n: int):
         if self._pad_mode == "STEMS" and 4 <= n < 7:
-            stem_names = ["vocals","drums","bass","other"]
-            self._stem_solo_end(stem_names[n - 4])
+            name = self._stm_names[n] if n < len(self._stm_names) else None
+            if name:
+                self._stem_solo_end(name)
 
     def _pad_right_click(self, n: int):
         if self._pad_mode == "HOT CUE":
@@ -480,47 +484,40 @@ class DeckWidget(QWidget):
                 btn.setText(lbl); btn.setChecked(False)
 
             elif mode == "STEMS":
-                stem_names = ["vocals","drums","bass","other"]
                 col   = self._stm_colors[i] if i < len(self._stm_colors) else "#888"
                 lbl   = self._stm_labels[i] if i < len(self._stm_labels) else ""
+                name  = self._stm_names[i]  if i < len(self._stm_names)  else ""
                 ready = self.deck.stems_ready
-                if i < 4:
-                    name   = stem_names[i]
-                    active = name in self.deck.active_stems if ready else False
-                    if ready and active:
+                is_solo = i >= 4
+                if not is_solo:
+                    active = name in self.deck.active_stems if ready else True
+                    if active:
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col}55;border:2px solid {col};"
                             f"border-radius:6px;color:{col};font-size:10px;font-weight:bold;}}"
                             f"QPushButton:pressed{{background:{col}99;}}")
-                    elif ready:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:1px solid {col}44;"
-                            f"border-radius:6px;color:{col}66;font-size:10px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:#1a1a22;}}")
                     else:
+                        # Muted — show clearly with ╳ but keep label readable
                         btn.setStyleSheet(
-                            "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
-                            "border-radius:6px;color:#222;font-size:10px;}")
-                    btn.setText(lbl if ready else "…"); btn.setChecked(active)
+                            f"QPushButton{{background:#111;border:2px solid {col}66;"
+                            f"border-radius:6px;color:{col}88;font-size:10px;font-weight:bold;"
+                            f"text-decoration:line-through;}}"
+                            f"QPushButton:pressed{{background:#1a1a22;}}")
+                    btn.setText(lbl); btn.setChecked(active)
                 else:
-                    solo = getattr(self.deck, '_solo_stem', None)
-                    name = stem_names[i - 4] if (i - 4) < len(stem_names) else ""
+                    solo  = getattr(self.deck, '_solo_stem', None)
                     active = (solo == name)
-                    if ready and active:
+                    if active:
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col}88;border:2px solid {col};"
-                            f"border-radius:6px;color:#fff;font-size:8px;font-weight:bold;}}"
+                            f"border-radius:6px;color:#fff;font-size:7px;font-weight:bold;}}"
                             f"QPushButton:pressed{{background:{col}cc;}}")
-                    elif ready:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:1px solid {col}33;"
-                            f"border-radius:6px;color:{col}55;font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:#1a1a22;}}")
                     else:
                         btn.setStyleSheet(
-                            "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
-                            "border-radius:6px;color:#222;font-size:8px;}")
-                    btn.setText(lbl if ready else "…"); btn.setChecked(active)
+                            f"QPushButton{{background:#111;border:1px solid {col}55;"
+                            f"border-radius:6px;color:{col}99;font-size:7px;font-weight:bold;}}"
+                            f"QPushButton:pressed{{background:{col}33;}}")
+                    btn.setText(lbl); btn.setChecked(active)
 
 
     def _key_shift(self, delta: int, reset: bool = False):
