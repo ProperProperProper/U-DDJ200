@@ -341,7 +341,10 @@ class DeckWidget(QWidget):
     def _cycle_pad_mode(self):
         modes = self._cycle_modes
         idx = modes.index(self._pad_mode) if self._pad_mode in modes else 0
-        self._set_pad_mode(modes[(idx + 1) % len(modes)])
+        next_mode = modes[(idx + 1) % len(modes)]
+        # Always schedule on main thread — this may be called from MIDI thread
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._set_pad_mode(next_mode))
 
     def _set_pad_mode(self, mode: str):
         self._pad_mode = mode
