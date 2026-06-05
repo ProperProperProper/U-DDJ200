@@ -383,11 +383,10 @@ class DDJ200:
                 return
 
             if status == PAD_N[d] and val:
-                # Top-row pad 8 (last top pad) = cycle pad mode in all modes
-                # HOT CUE: note 0x03 | BEAT LOOP: BL_BASE+3 | others: SP_BASE+3
-                is_top_pad8 = (note == 0x03 or note == BL_BASE + 3 or
-                               (SP_BASE <= note <= SP_BASE + 3 and note == SP_BASE + 3))
-                if is_top_pad8:
+                # Bottom row pad 8 (rightmost) = cycle pad mode — always, any mode.
+                # HOT CUE: note 0x07 | BEAT LOOP: BL_BASE+7 | others: SP_BASE+7
+                is_pad8 = (note == 0x07 or note == BL_BASE + 7 or note == SP_BASE + 7)
+                if is_pad8:
                     idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
                     self._pad_mode[d] = self._PAD_MODES[idx]
                     self._refresh_pad_leds(d)
@@ -395,31 +394,19 @@ class DDJ200:
                         self.on_pad_mode_changed(d, self._PAD_MODES[idx])
                     return
 
-                # Bottom row pads always toggle stems regardless of pad mode.
-                # Shift + last bottom pad (pad 8) cycles the top-row pad mode.
-                # HOT CUE bottom row = notes 0x04-0x07
-                # BEAT LOOP bottom row = notes BL_BASE+4 to BL_BASE+7
-                # Other modes bottom row = SP_BASE+4 to SP_BASE+7
+                # Bottom row pads 5-7 (notes 0x04-0x06) = stem toggles.
+                # Pad 8 (0x07) is the mode cycler above — excluded here.
                 bottom_note = None
                 bottom_idx  = None
-                if 0x04 <= note <= 0x07:
+                if 0x04 <= note <= 0x06:
                     bottom_note = note; bottom_idx = note - 0x04
-                elif BL_BASE + 4 <= note <= BL_BASE + 7:
+                elif BL_BASE + 4 <= note <= BL_BASE + 6:
                     bottom_note = note; bottom_idx = note - BL_BASE - 4
-                elif SP_BASE + 4 <= note <= SP_BASE + 7:
+                elif SP_BASE + 4 <= note <= SP_BASE + 6:
                     bottom_note = note; bottom_idx = note - SP_BASE - 4
 
                 if bottom_idx is not None:
-                    # Shift + pad 8 (last bottom pad) = cycle pad mode
-                    if self._shift[d] and bottom_idx == 3:
-                        idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
-                        self._pad_mode[d] = self._PAD_MODES[idx]
-                        self._refresh_pad_leds(d)
-                        if self.on_pad_mode_changed:
-                            self.on_pad_mode_changed(d, self._PAD_MODES[idx])
-                        return
-
-                    # Stem toggle
+                    # Stem toggle (pads 5-7 = VOC, DRM, BSS)
                     if bottom_idx < len(STEM_NAMES):
                         deck = self.engine.deck(d)
                         name = STEM_NAMES[bottom_idx]
