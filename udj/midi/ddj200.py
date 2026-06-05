@@ -120,7 +120,7 @@ class DDJ200:
         self._jog_touch      = [False, False]
         self._loop_recording  = [False, False]   # True while awaiting loop-out press
         # Pad mode per deck: cycles HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX
-        self._pad_mode       = ["BEAT LOOP", "BEAT LOOP"]
+        self._pad_mode       = ["STEMS", "STEMS"]
         _PAD_MODES = ["HOT CUE", "BEAT LOOP", "BEAT JUMP", "STEMS"]
         # Pad 8 (note 0x07 / BL_BASE+7 / SP_BASE+7) cycles modes in top row
         self._PAD_MODES      = _PAD_MODES
@@ -169,6 +169,10 @@ class DDJ200:
                         self._refresh_pad_leds(deck_idx)
                 return hook
             self.engine.deck(d).on_stems_ready = _make_hook(d, orig)
+
+        # Initialise LEDs for both decks in STEMS mode
+        for d in range(2):
+            self._refresh_pad_leds(d)
 
         print(f"[DDJ-200] connected")
         return True
