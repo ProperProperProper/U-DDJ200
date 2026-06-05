@@ -121,8 +121,8 @@ class DDJ200:
         self._loop_recording  = [False, False]   # True while awaiting loop-out press
         # Pad mode per deck: cycles HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX
         self._pad_mode       = ["BEAT LOOP", "BEAT LOOP"]
-        _PAD_MODES = ["HOT CUE", "BEAT LOOP", "BEAT JUMP", "PAD FX"]
-        # STEMS removed — bottom row pads (5-8) always control stems in any mode
+        _PAD_MODES = ["HOT CUE", "BEAT LOOP", "BEAT JUMP", "STEMS"]
+        # Pad 8 (note 0x07 / BL_BASE+7 / SP_BASE+7) cycles modes in top row
         self._PAD_MODES      = _PAD_MODES
         self._pfx_held       = [[False]*8, [False]*8]   # pad FX gate state per deck
         self._jog_key_accum  = [0, 0]                   # fractional key shift accumulator
@@ -383,6 +383,18 @@ class DDJ200:
                 return
 
             if status == PAD_N[d] and val:
+                # Top-row pad 8 (last top pad) = cycle pad mode in all modes
+                # HOT CUE: note 0x03 | BEAT LOOP: BL_BASE+3 | others: SP_BASE+3
+                is_top_pad8 = (note == 0x03 or note == BL_BASE + 3 or
+                               (SP_BASE <= note <= SP_BASE + 3 and note == SP_BASE + 3))
+                if is_top_pad8:
+                    idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
+                    self._pad_mode[d] = self._PAD_MODES[idx]
+                    self._refresh_pad_leds(d)
+                    if self.on_pad_mode_changed:
+                        self.on_pad_mode_changed(d, self._PAD_MODES[idx])
+                    return
+
                 # Bottom row pads always toggle stems regardless of pad mode.
                 # Shift + last bottom pad (pad 8) cycles the top-row pad mode.
                 # HOT CUE bottom row = notes 0x04-0x07
