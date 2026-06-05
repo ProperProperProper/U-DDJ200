@@ -224,7 +224,7 @@ class DeckWidget(QWidget):
         # Stem buttons removed — stems controlled via mixer knobs
         self._stem_btns: dict[str, QPushButton] = {}
 
-        # ── Performance pads — DDJ-200 layout ────────────────
+        # ── Performance pads — all 4 banks always visible ────────
         self._pad_mode = "BEAT LOOP"
         _PAD_MODES_UI = [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"),
                          ("BEAT JUMP","#ffcc00"), ("PAD FX","#ff6600")]
@@ -232,24 +232,36 @@ class DeckWidget(QWidget):
         _HC_COLORS = ["#ff3333","#ff8800","#ffdd00","#00cc44",
                       "#00ccff","#4488ff","#aa44ff","#ff44aa"]
         _BL_LABELS = ["1/4","1/2","1","2","4","8","16","32"]
-        _STEM_LABELS= ["DRUMS","BASS","OTHER","VOCALS","DRUMS►","BASS►","OTHER►","VOX►"]
-        _STEM_COLORS= ["#ff4444","#ff9900","#44aaff","#aa44ff",
-                       "#ff4444","#ff9900","#44aaff","#aa44ff"]
-        _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4","+8"]
-        _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0, 8.0]
-        _PFX_LABELS = ["FILTER↓","FILTER↑","ECHO","ROLL",
-                       "REVERB","FLANGE","PHASE","ECHO OUT"]
-        _PFX_COLORS = ["#4499ff","#ff9944","#44ffbb","#ffcc00",
-                       "#bb44ff","#ff4488","#ffdd44","#ffffff"]
+        _BJ_LABELS = ["-1","−2","−4","−8","+1","+2","+4","+8"]
+        _BJ_BARS   = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0, 8.0]
+        _PFX_LABELS= ["FILTER↓","FILTER↑","ECHO","ROLL",
+                      "REVERB","FLANGE","PHASE","ECHO OUT"]
+        _PFX_COLORS= ["#4499ff","#ff9944","#44ffbb","#ffcc00",
+                      "#bb44ff","#ff4488","#ffdd44","#ffffff"]
 
-        self._pad_btns: list[QPushButton] = []
         self._mode_btns: dict[str, QPushButton] = {}
+        # Per-bank button lists (8 buttons each)
+        self._hc_btns:  list[QPushButton] = []
+        self._bl_btns:  list[QPushButton] = []
+        self._bj_btns:  list[QPushButton] = []
+        self._pfx_btns: list[QPushButton] = []
+        # Legacy alias — points to whichever bank is active (for MIDI LED refresh)
+        self._pad_btns: list[QPushButton] = []
 
-        # All pad UI in one block: mode selector + 2 pad rows
+        self._bj_bars    = _BJ_BARS
+        self._pfx_active = [False] * 8
+        self._hc_colors  = _HC_COLORS
+        self._bl_labels  = _BL_LABELS
+        self._bj_labels  = _BJ_LABELS
+        self._pfx_labels = _PFX_LABELS
+        self._pfx_colors = _PFX_COLORS
+
+        PAD_W, PAD_H = 50, 26   # compact so all 4 banks fit
+
         pads_outer = QVBoxLayout()
-        pads_outer.setSpacing(3)
+        pads_outer.setSpacing(2)
 
-        # Mode selector sits at the top of the pad block — same width as pads
+        # Mode selector — highlights which bank hardware controls
         mode_row = QHBoxLayout()
         mode_row.setSpacing(3)
         for mode, color in _PAD_MODES_UI:
@@ -267,39 +279,52 @@ class DeckWidget(QWidget):
         mode_row.addStretch()
         pads_outer.addLayout(mode_row)
 
-        # Pad grid — top row (pads 4–7) + bottom row (pads 0–3, always stems)
-        for row_i in range(2):
-            pad_row = QHBoxLayout()
-            pad_row.setSpacing(3)
-            for col_i in range(4):
-                n = (1 - row_i) * 4 + col_i
-                btn = QPushButton()
-                btn.setFixedSize(54, 38)
-                btn.setCheckable(True)
-                btn.setProperty("pad_idx", n)
-                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                btn.customContextMenuRequested.connect(
-                    lambda _, i=n: self._pad_right_click(i))
-                btn.pressed.connect(lambda i=n: self._pad_press(i))
-                btn.released.connect(lambda i=n: self._pad_release(i))
-                pad_row.addWidget(btn)
-                self._pad_btns.append(btn)
-            pad_row.addStretch()
-            pads_outer.addLayout(pad_row)
+        def _make_bank(btn_list, press_fn, release_fn=None, right_fn=None):
+            layout = QVBoxLayout()
+            layout.setSpacing(2)
+            for row_i in range(2):
+                row_layout = QHBoxLayout()
+                row_layout.setSpacing(2)
+                for col_i in range(4):
+                    n = row_i * 4 + col_i
+                    btn = QPushButton()
+                    btn.setFixedSize(PAD_W, PAD_H)
+                    btn.setCheckable(True)
+                    btn.pressed.connect(lambda i=n: press_fn(i))
+                    if release_fn:
+                        btn.released.connect(lambda i=n: release_fn(i))
+                    if right_fn:
+                        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                        btn.customContextMenuRequested.connect(lambda _, i=n: right_fn(i))
+                    row_layout.addWidget(btn)
+                    btn_list.append(btn)
+                row_layout.addStretch()
+                layout.addLayout(row_layout)
+            return layout
+
+        # HOT CUE bank
+        pads_outer.addLayout(_make_bank(
+            self._hc_btns,
+            press_fn=self._hc_press,
+            right_fn=self._hc_right_click))
+
+        # BEAT LOOP bank
+        pads_outer.addLayout(_make_bank(
+            self._bl_btns,
+            press_fn=self._bl_press))
+
+        # BEAT JUMP bank
+        pads_outer.addLayout(_make_bank(
+            self._bj_btns,
+            press_fn=self._bj_press))
+
+        # PAD FX bank
+        pads_outer.addLayout(_make_bank(
+            self._pfx_btns,
+            press_fn=self._pfx_press,
+            release_fn=self._pfx_release))
 
         root.addLayout(pads_outer)
-
-        # Store pad color/label info for rendering
-        self._hc_colors  = _HC_COLORS
-        self._bl_labels  = _BL_LABELS
-        self._stem_labels= _STEM_LABELS
-        self._stem_colors= _STEM_COLORS
-        self._bj_labels  = _BJ_LABELS
-        self._bj_bars    = _BJ_BARS
-        self._pfx_labels = _PFX_LABELS
-        self._pfx_colors = _PFX_COLORS
-        self._pfx_active = [False] * 8   # which pad FX pads are currently held
-
         root.addStretch()
 
     def _connect_deck(self):
@@ -345,47 +370,52 @@ class DeckWidget(QWidget):
         self._pad_mode = mode
         for m, b in self._mode_btns.items():
             b.setChecked(m == mode)
+        # Update legacy alias for MIDI LED refresh
+        bank = {"HOT CUE": self._hc_btns, "BEAT LOOP": self._bl_btns,
+                "BEAT JUMP": self._bj_btns, "PAD FX": self._pfx_btns}
+        self._pad_btns = bank.get(mode, self._hc_btns)
         self._refresh_pads()
 
+    # Per-bank press/release handlers — always active regardless of hardware mode
+    def _hc_press(self, n: int):
+        self.deck.hotcue_activate(n)
+        self._refresh_pads()
+
+    def _hc_right_click(self, n: int):
+        self.deck.hotcue_clear(n)
+        self._refresh_pads()
+
+    def _bl_press(self, n: int):
+        from ..core.deck import BEAT_LOOP_SIZES
+        if n < len(BEAT_LOOP_SIZES):
+            self.deck.beatloop_toggle(BEAT_LOOP_SIZES[n])
+        self._refresh_pads()
+
+    def _bj_press(self, n: int):
+        if n < len(self._bj_bars):
+            self.deck.beat_jump(self._bj_bars[n])
+
+    def _pfx_press(self, n: int):
+        self._pfx_active[n] = True
+        self._apply_pad_fx(n, True)
+        self._refresh_pads()
+
+    def _pfx_release(self, n: int):
+        self._pfx_active[n] = False
+        self._apply_pad_fx(n, False)
+        self._refresh_pads()
+
+    # Legacy shims — called by MIDI handler
     def _pad_press(self, n: int):
         mode = self._pad_mode
-        if mode == "HOT CUE":
-            self.deck.hotcue_activate(n)
-            self._refresh_pads()
-        elif mode == "BEAT LOOP":
-            from ..core.deck import BEAT_LOOP_SIZES
-            if n < len(BEAT_LOOP_SIZES):
-                self.deck.beatloop_toggle(BEAT_LOOP_SIZES[n])
-            self._refresh_pads()
-        elif mode == "STEMS":
-            stem_names = ["drums","bass","other","vocals"]
-            if n < 4:
-                name = stem_names[n]
-                if self.deck.stems_ready:
-                    self.deck.toggle_stem(name)
-                    self._refresh_pads()
-            elif n < 8:
-                # Pads 4-7: hold to solo that stem (mute all others)
-                name = stem_names[n - 4]
-                if self.deck.stems_ready:
-                    self._stem_solo_start(name)
-        elif mode == "BEAT JUMP":
-            if n < len(self._bj_bars):
-                self.deck.beat_jump(self._bj_bars[n])
-        elif mode == "PAD FX":
-            self._pfx_active[n] = True
-            self._apply_pad_fx(n, True)
-            self._refresh_pads()
+        if mode == "HOT CUE":   self._hc_press(n)
+        elif mode == "BEAT LOOP": self._bl_press(n)
+        elif mode == "BEAT JUMP": self._bj_press(n)
+        elif mode == "PAD FX":    self._pfx_press(n)
 
     def _pad_release(self, n: int):
-        mode = self._pad_mode
-        if mode == "STEMS" and n >= 4:
-            stem_names = ["drums","bass","other","vocals"]
-            self._stem_solo_end(stem_names[n - 4])
-        elif mode == "PAD FX":
-            self._pfx_active[n] = False
-            self._apply_pad_fx(n, False)
-            self._refresh_pads()
+        if self._pad_mode == "PAD FX":
+            self._pfx_release(n)
 
     def _stem_solo_start(self, name: str):
         """Temporarily mute all stems except `name`."""
@@ -432,124 +462,79 @@ class DeckWidget(QWidget):
             self._refresh_pads()
 
     def _refresh_pads(self):
-        """Repaint all pad buttons to reflect current state and mode."""
-        mode = self._pad_mode
+        """Repaint all 4 pad banks simultaneously."""
         from ..core.deck import BEAT_LOOP_SIZES
-        for i, btn in enumerate(self._pad_btns):
-            if mode == "HOT CUE":
-                col  = self._hc_colors[i]
-                set_ = self.deck.hot_cues[i] is not None
-                lbl  = f"CUE {i+1}" if not set_ else f"● {i+1}"
-                if set_:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:{col}44;border:2px solid {col};"
-                        f"border-radius:4px;color:{col};font-size:9px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}88;}}")
-                else:
-                    btn.setStyleSheet(
-                        "QPushButton{background:#141418;border:1px solid #2a2a35;"
-                        "border-radius:4px;color:#333;font-size:9px;font-weight:bold;}"
-                        "QPushButton:pressed{background:#222228;}")
-                btn.setText(lbl)
-                btn.setChecked(set_)
+        self._refresh_hc_bank()
+        self._refresh_bl_bank()
+        self._refresh_bj_bank()
+        self._refresh_pfx_bank()
 
-            elif mode == "BEAT LOOP":
-                col   = "#00dd88"
-                lbl   = self._bl_labels[i] if i < len(self._bl_labels) else ""
-                active = (self.deck.loop_active and
-                          abs(self.deck._current_loop_beats -
-                              (BEAT_LOOP_SIZES[i] if i < len(BEAT_LOOP_SIZES) else -1)) < 0.01)
-                if active:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:{col}55;border:2px solid {col};"
-                        f"border-radius:4px;color:{col};font-size:10px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}99;}}")
-                else:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                        f"border-radius:4px;color:#446655;font-size:10px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:#1a2a22;}}")
-                btn.setText(lbl)
-                btn.setChecked(active)
+    def _refresh_hc_bank(self):
+        for i, btn in enumerate(self._hc_btns):
+            col  = self._hc_colors[i]
+            set_ = self.deck.hot_cues[i] is not None
+            lbl  = f"● {i+1}" if set_ else f"CUE {i+1}"
+            if set_:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{col}44;border:2px solid {col};"
+                    f"border-radius:4px;color:{col};font-size:8px;font-weight:bold;}}"
+                    f"QPushButton:pressed{{background:{col}88;}}")
+            else:
+                btn.setStyleSheet(
+                    "QPushButton{background:#141418;border:1px solid #2a2a35;"
+                    "border-radius:4px;color:#333;font-size:8px;font-weight:bold;}"
+                    "QPushButton:pressed{background:#222228;}")
+            btn.setText(lbl)
+            btn.setChecked(set_)
 
-            elif mode == "STEMS":
-                stem_names = ["drums","bass","other","vocals"]
-                col   = self._stem_colors[i]
-                lbl   = self._stem_labels[i]
-                ready = self.deck.stems_ready
-                if i < 4:
-                    name   = stem_names[i]
-                    active = name in self.deck.active_stems if ready else False
-                    if ready and active:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:{col}55;border:2px solid {col};"
-                            f"border-radius:4px;color:{col};font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col}99;}}")
-                    elif ready:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:1px solid {col}55;"
-                            f"border-radius:4px;color:{col}88;font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:#1a1a22;}}")
-                    else:
-                        btn.setStyleSheet(
-                            "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
-                            "border-radius:4px;color:#222;font-size:8px;}")
-                    btn.setText(lbl if ready else "…")
-                    btn.setChecked(active)
-                else:
-                    # Pads 4-7: stem solo (hold)
-                    solo = getattr(self.deck, '_solo_stem', None)
-                    name = stem_names[i - 4]
-                    active = (solo == name)
-                    if ready and active:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:{col}88;border:2px solid {col};"
-                            f"border-radius:4px;color:#fff;font-size:7px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col}cc;}}")
-                    elif ready:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:1px solid {col}44;"
-                            f"border-radius:4px;color:{col}66;font-size:7px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:#1a1a22;}}")
-                    else:
-                        btn.setStyleSheet(
-                            "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
-                            "border-radius:4px;color:#222;font-size:7px;}")
-                    btn.setText(lbl if ready else "…")
-                    btn.setChecked(active)
+    def _refresh_bl_bank(self):
+        from ..core.deck import BEAT_LOOP_SIZES
+        for i, btn in enumerate(self._bl_btns):
+            col   = "#00dd88"
+            lbl   = self._bl_labels[i] if i < len(self._bl_labels) else ""
+            active = (self.deck.loop_active and i < len(BEAT_LOOP_SIZES) and
+                      abs(self.deck._current_loop_beats - BEAT_LOOP_SIZES[i]) < 0.01)
+            if active:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{col}55;border:2px solid {col};"
+                    f"border-radius:4px;color:{col};font-size:9px;font-weight:bold;}}"
+                    f"QPushButton:pressed{{background:{col}99;}}")
+            else:
+                btn.setStyleSheet(
+                    "QPushButton{background:#111;border:1px solid #2a2a35;"
+                    "border-radius:4px;color:#446655;font-size:9px;font-weight:bold;}"
+                    "QPushButton:pressed{background:#1a2a22;}")
+            btn.setText(lbl)
+            btn.setChecked(active)
 
-            elif mode == "BEAT JUMP":
-                col  = "#ffcc00"
-                lbl  = self._bj_labels[i] if i < len(self._bj_labels) else ""
-                has_bpm = self.deck.bpm > 0
-                if has_bpm:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:#1a1600;border:1px solid {col}55;"
-                        f"border-radius:4px;color:{col}cc;font-size:11px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}44;}}")
-                else:
-                    btn.setStyleSheet(
-                        "QPushButton{background:#0e0e12;border:1px solid #1a1a22;"
-                        "border-radius:4px;color:#333;font-size:11px;}")
-                btn.setText(lbl)
-                btn.setChecked(False)
+    def _refresh_bj_bank(self):
+        for i, btn in enumerate(self._bj_btns):
+            col = "#ffcc00"
+            lbl = self._bj_labels[i] if i < len(self._bj_labels) else ""
+            btn.setStyleSheet(
+                f"QPushButton{{background:#111;border:1px solid #2a2a35;"
+                f"border-radius:4px;color:{col}88;font-size:9px;font-weight:bold;}}"
+                f"QPushButton:pressed{{background:{col}33;}}")
+            btn.setText(lbl)
 
-            elif mode == "PAD FX":
-                col    = self._pfx_colors[i] if i < len(self._pfx_colors) else "#555"
-                lbl    = self._pfx_labels[i] if i < len(self._pfx_labels) else ""
-                active = self._pfx_active[i]
-                if active:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:{col}66;border:2px solid {col};"
-                        f"border-radius:4px;color:#fff;font-size:7px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}99;}}")
-                else:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:#111;border:1px solid {col}44;"
-                        f"border-radius:4px;color:{col}99;font-size:7px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}33;}}")
-                btn.setText(lbl)
-                btn.setChecked(active)
+    def _refresh_pfx_bank(self):
+        for i, btn in enumerate(self._pfx_btns):
+            col    = self._pfx_colors[i]
+            lbl    = self._pfx_labels[i]
+            active = self._pfx_active[i]
+            if active:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{col}66;border:2px solid {col};"
+                    f"border-radius:4px;color:{col};font-size:7px;font-weight:bold;}}"
+                    f"QPushButton:pressed{{background:{col}99;}}")
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:#111;border:1px solid {col}44;"
+                    f"border-radius:4px;color:{col}99;font-size:7px;font-weight:bold;}}"
+                    f"QPushButton:pressed{{background:{col}33;}}")
+            btn.setText(lbl)
+            btn.setChecked(active)
+
 
     def _key_shift(self, delta: int, reset: bool = False):
         if reset:
