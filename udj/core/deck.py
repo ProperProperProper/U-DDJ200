@@ -65,10 +65,17 @@ class Deck:
         # Stems — populated asynchronously after track load
         self.stems: Optional[dict[str, np.ndarray]] = None
         self.active_stems: set[str] = set(STEM_NAMES)
-        self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}  # per-stem gain
+        self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
         self.stems_ready  = False
         self._stems_cache: Optional[np.ndarray] = None
-        self._solo_stem:   Optional[str] = None   # name of soloed stem (hold-to-solo)
+        self._solo_stem:   Optional[str] = None
+
+        # Smooth stem fade — prevents clicks on toggle.
+        # _stem_fade[s]        = current gain (0.0–1.0), updated each audio callback
+        # _stem_fade_target[s] = where we're ramping to
+        # Linear ramp over _STEM_FADE_SAMPLES samples (~10ms at 44100 Hz).
+        self._stem_fade:        dict[str, float] = {s: 1.0 for s in STEM_NAMES}
+        self._stem_fade_target: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
 
         self.key_shift: int = 0   # semitones ±12; applied as playback rate multiplier
 
@@ -114,11 +121,13 @@ class Deck:
             self._loop_recording = False
             self.file_path    = path
             self.duration     = len(audio) / self.sample_rate
-            self.stems        = None
-            self.stems_ready  = False
-            self._stems_cache = None
-            self.active_stems = set(STEM_NAMES)
-            self.stem_volumes = {s: 1.0 for s in STEM_NAMES}
+            self.stems              = None
+            self.stems_ready        = False
+            self._stems_cache       = None
+            self.active_stems       = set(STEM_NAMES)
+            self.stem_volumes       = {s: 1.0 for s in STEM_NAMES}
+            self._stem_fade         = {s: 1.0 for s in STEM_NAMES}
+            self._stem_fade_target  = {s: 1.0 for s in STEM_NAMES}
             if metadata:
                 self.title  = metadata.get("title",  "")
                 self.artist = metadata.get("artist", "")
@@ -412,11 +421,15 @@ class Deck:
             self.on_stems_ready(self.deck_id)
 
     def toggle_stem(self, name: str):
-        # GIL-safe set mutation; applied live in read()
+        """Toggle stem with smooth 10ms fade to prevent clicks."""
         if name in self.active_stems:
-            self.active_stems.discard(name)
+            # Fade out — keep in active_stems until fully silent (handled in read)
+            self._stem_fade_target[name] = 0.0
         else:
+            # Add immediately and fade in from silence
             self.active_stems.add(name)
+            self._stem_fade[name] = 0.0
+            self._stem_fade_target[name] = 1.0
 
     # 4 stems matching Serato: Vocals, Drums, Bass, Melody (other)
     STEM_KNOB_NAMES = ["vocals", "drums", "bass", "other"]
@@ -549,18 +562,48 @@ class Deck:
                         (-y0 + y2) * t + 2*y1)
                 return out_ch
 
-            # Stems: mix live per-buffer — O(active_stems × frames), never O(track_length)
-            # Snapshot volatile state outside any lock to avoid blocking the audio callback
+            # Stems: mix with per-stem smooth gain ramp to eliminate toggle clicks.
+            # Each stem fades in/out over _STEM_FADE_SAMPLES (~10ms) when toggled.
+            _STEM_FADE_SAMPLES = max(1, int(self.sample_rate * 0.010))
+
             if self.stems_ready and self.stems:
-                active  = list(self.active_stems)           # GIL-safe snapshot
                 volumes = dict(self.stem_volumes)           # GIL-safe snapshot
+                # Include all stems that are active OR still fading out
+                candidates = set(self.active_stems) | {
+                    s for s, g in self._stem_fade.items() if g > 0.001}
                 out = np.zeros((frames, 2), dtype=np.float32)
-                for s in active:
-                    if s in self.stems and isinstance(self.stems[s], np.ndarray):
-                        vol = volumes.get(s, 1.0)
-                        if vol > 0.0:
-                            out += _hermite(self.stems[s]) * vol
-                # Soft limiter instead of hard clip — same tanh knee as the master bus
+                for s in candidates:
+                    if s not in self.stems or not isinstance(self.stems[s], np.ndarray):
+                        continue
+                    vol      = volumes.get(s, 1.0)
+                    g_start  = float(self._stem_fade.get(s, 1.0))
+                    g_target = float(self._stem_fade_target.get(s, 1.0))
+
+                    if g_start == g_target:
+                        gain_curve = np.full(frames, g_start * vol, dtype=np.float32)
+                    else:
+                        # Linear ramp across this buffer
+                        delta      = g_target - g_start
+                        step       = delta / _STEM_FADE_SAMPLES
+                        ramp       = g_start + np.arange(frames, dtype=np.float64) * step
+                        ramp       = np.clip(ramp,
+                                             min(g_start, g_target),
+                                             max(g_start, g_target))
+                        gain_curve = (ramp * vol).astype(np.float32)
+                        # Advance fade state
+                        new_g = g_start + step * frames
+                        new_g = float(np.clip(new_g,
+                                              min(g_start, g_target),
+                                              max(g_start, g_target)))
+                        self._stem_fade[s] = new_g
+                        # Fully faded out — remove from active_stems cleanly
+                        if g_target == 0.0 and new_g <= 0.001:
+                            self._stem_fade[s] = 0.0
+                            self.active_stems.discard(s)
+
+                    out += _hermite(self.stems[s]) * gain_curve[:, np.newaxis]
+
+                # Transparent soft limiter — tanh knee above 0.85
                 thr = 0.85
                 over = np.abs(out) > thr
                 if over.any():
