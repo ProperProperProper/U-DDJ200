@@ -376,7 +376,8 @@ class DDJ200:
             # Pad mode cycle: Shift + pad-bank select buttons (BL_BASE pad 0)
             # Use Shift + first pad of beat-loop bank to cycle modes
             if status == PAD_N[d] and note == BL_BASE and self._shift[d] and val:
-                idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
+                cur = next((i for i, m in enumerate(self._PAD_MODES) if m == mode), 0)
+                idx = (cur + 1) % len(self._PAD_MODES)
                 self._pad_mode[d] = self._PAD_MODES[idx]
                 print(f"[DDJ] deck {d} pad mode → {self._pad_mode[d]}")
                 self._refresh_pad_leds(d)
@@ -387,7 +388,9 @@ class DDJ200:
                 # HOT CUE: note 0x07 | BEAT LOOP: BL_BASE+7 | others: SP_BASE+7
                 is_pad8 = (note == 0x07 or note == BL_BASE + 7 or note == SP_BASE + 7)
                 if is_pad8:
-                    idx = (self._PAD_MODES.index(mode) + 1) % len(self._PAD_MODES)
+                    # Safe index — default to 0 if mode no longer exists in list
+                    cur = next((i for i, m in enumerate(self._PAD_MODES) if m == mode), 0)
+                    idx = (cur + 1) % len(self._PAD_MODES)
                     self._pad_mode[d] = self._PAD_MODES[idx]
                     self._refresh_pad_leds(d)
                     if self.on_pad_mode_changed:

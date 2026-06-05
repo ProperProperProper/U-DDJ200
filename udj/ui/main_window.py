@@ -111,9 +111,8 @@ class MainWindow(QMainWindow):
         self.library.set_engine(self.engine)
         # Sync pad mode display when hardware cycles modes
         _deck_widgets = [self.deck1_widget, self.deck2_widget]
-        from PyQt6.QtCore import QTimer
         self.controller.on_pad_mode_changed = (
-            lambda d, m: QTimer.singleShot(0, lambda: _deck_widgets[d]._set_pad_mode(m)))
+            lambda d, m: _deck_widgets[d]._set_pad_mode(m))
 
     # ──────────────────────────────────────────────────────────
     #  Track loading
