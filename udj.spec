@@ -14,6 +14,7 @@ a = Analysis(
         ('assets', 'assets'),
         ('udj', 'udj'),
         ('stem_analyzer.py', '.'),
+        ('dev_inspect_stems.py', '.'),
     ],
     hiddenimports=[
         # audio-separator / onnxruntime (Roformer vocal model)

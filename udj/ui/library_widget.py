@@ -421,8 +421,16 @@ class _InspectWorker(QObject):
             all_specs   = []
 
             # Import metric helpers from dev_inspect_stems
-            dev = pathlib.Path(__file__).parent.parent.parent / "dev_inspect_stems.py"
-            import importlib.util
+            # Check bundle root (PyInstaller) then source tree
+            import importlib.util, sys as _sys
+            _candidates = [
+                pathlib.Path(getattr(_sys, '_MEIPASS', '')) / "dev_inspect_stems.py",
+                pathlib.Path(__file__).parent.parent.parent / "dev_inspect_stems.py",
+            ]
+            dev = next((p for p in _candidates if p.exists()), None)
+            if dev is None:
+                self.error.emit("dev_inspect_stems.py not found in bundle or source tree.")
+                return
             spec = importlib.util.spec_from_file_location("dev_inspect_stems", dev)
             mod  = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
