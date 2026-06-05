@@ -532,9 +532,8 @@ class DeckWidget(QWidget):
                             f"QPushButton:pressed{{background:{col}cc;}}")
                     else:
                         btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:2px solid {col}55;"
-                            f"border-radius:6px;color:{col}66;font-size:10px;font-weight:bold;"
-                            f"text-decoration:line-through;}}"
+                            f"QPushButton{{background:#111;border:2px solid {col}44;"
+                            f"border-radius:6px;color:{col}55;font-size:10px;font-weight:bold;}}"
                             f"QPushButton:pressed{{background:#1a1a22;}}")
                     btn.setText(lbl); btn.setChecked(active)
 
