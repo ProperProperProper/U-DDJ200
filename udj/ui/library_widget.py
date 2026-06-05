@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                               QTableView, QPushButton, QLabel, QProgressBar,
-                              QFileDialog, QHeaderView, QAbstractItemView)
-from PyQt6.QtCore import Qt, QTimer, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl
+                              QFileDialog, QHeaderView, QAbstractItemView,
+                              QDialog, QTextEdit, QSizePolicy, QMessageBox)
+from PyQt6.QtCore import Qt, QTimer, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
@@ -165,6 +166,19 @@ class LibraryWidget(QWidget):
         )
         self._btn_analyse.clicked.connect(self._analyse_now)
 
+        self._btn_stems_inspect = QPushButton("🔬 Inspect Stems")
+        self._btn_stems_inspect.setObjectName("BtnScan")
+        self._btn_stems_inspect.setToolTip(
+            "Inspect stems of loaded deck tracks with Claude — analyses quality "
+            "and recommends post-processing improvements")
+        self._btn_stems_inspect.setStyleSheet(
+            "QPushButton{background:#111;border:1px solid #2a1a3a;color:#aa66ff;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
+            "QPushButton:disabled{background:#1a1228;border:1px solid #aa66ff;"
+            "color:#cc99ff;}"
+        )
+        self._btn_stems_inspect.clicked.connect(self._run_stems_inspect)
+
         self._btn_d1 = QPushButton("→ Deck 1")
         self._btn_d1.setObjectName("BtnLoadDeck")
         self._btn_d1.clicked.connect(lambda: self._load_selected(0))
@@ -199,6 +213,7 @@ class LibraryWidget(QWidget):
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
         bar.addWidget(self._btn_analyse)
+        bar.addWidget(self._btn_stems_inspect)
         bar.addWidget(self._btn_d1)
         bar.addWidget(self._btn_d2)
         bar.addWidget(self._progress)
@@ -316,6 +331,33 @@ class LibraryWidget(QWidget):
     def load_selected(self, deck: int):
         self._load_selected(deck)
 
+    # ── Stem inspection ───────────────────────────────────────────────────────
+
+    def set_engine(self, engine):
+        """Called from MainWindow after construction so we can access deck paths."""
+        self._engine = engine
+
+    def _run_stems_inspect(self):
+        """Run dev_inspect_stems on the tracks currently loaded on decks."""
+        engine = getattr(self, "_engine", None)
+        if engine is None:
+            QMessageBox.warning(self, "No Engine", "Engine not connected.")
+            return
+
+        paths = []
+        for i in range(2):
+            deck = engine.deck(i)
+            if deck.audio is not None and deck.file_path:
+                paths.append(deck.file_path)
+
+        if not paths:
+            QMessageBox.warning(self, "No Tracks Loaded",
+                                "Load tracks on the decks first, then run inspection.")
+            return
+
+        dlg = StemInspectDialog(paths, parent=self)
+        dlg.exec()
+
     def analysis_progress_start(self, total: int):
         self._progress.setMaximum(total)
         self._progress.setValue(0)
@@ -349,3 +391,189 @@ class LibraryWidget(QWidget):
             self._cpu_label.setStyleSheet(
                 "color:#00dd88;background:#001a0e;border:1px solid #006633;"
                 "border-radius:3px;font-size:9px;font-weight:bold;padding:1px 4px;")
+
+
+# ── Stem Inspection Dialog ────────────────────────────────────────────────────
+
+class _InspectWorker(QObject):
+    finished  = pyqtSignal(str)   # analysis text
+    error     = pyqtSignal(str)
+
+    def __init__(self, paths: list[str]):
+        super().__init__()
+        self._paths = paths
+
+    def run(self):
+        import sys, pathlib, json, base64, io
+        sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
+        try:
+            import numpy as np
+            import soundfile as sf
+            from ..core.stems import _split_other_to_guitar_piano
+            try:
+                from stem_analyzer import load_cached_stems, is_cached
+                _has_wav_cache = True
+            except Exception:
+                _has_wav_cache = False
+
+            sr = 44100
+            all_metrics = []
+            all_specs   = []
+
+            # Import metric helpers from dev_inspect_stems
+            dev = pathlib.Path(__file__).parent.parent.parent / "dev_inspect_stems.py"
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("dev_inspect_stems", dev)
+            mod  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            for path in self._paths:
+                name = pathlib.Path(path).stem[:50]
+                stems = None
+                if _has_wav_cache and is_cached(path):
+                    stems = load_cached_stems(path, sr)
+                if stems is None:
+                    self.error.emit(f"No cached stems for {name}. Load the track and wait for ● STEMS READY first.")
+                    return
+
+                stems.pop("_vocal_present", None)
+                if "guitar" not in stems and "other" in stems:
+                    stems["guitar"], stems["piano"] = _split_other_to_guitar_piano(stems["other"], sr)
+
+                orig, orig_sr = sf.read(path, dtype="float32", always_2d=True)
+                if orig.shape[1] == 1:
+                    orig = np.repeat(orig, 2, axis=1)
+                if orig_sr != sr:
+                    from math import gcd
+                    from scipy.signal import resample_poly
+                    g = gcd(orig_sr, sr)
+                    orig = resample_poly(orig, sr // g, orig_sr // g).astype(np.float32)
+                n = min(len(orig), min(len(v) for v in stems.values() if isinstance(v, np.ndarray)))
+                orig = orig[:n]
+                stems = {k: v[:n] for k, v in stems.items() if isinstance(v, np.ndarray)}
+
+                metrics = mod.compute_metrics(stems, orig, sr, name)
+                spec_png = mod.make_spectrogram(stems, sr, name)
+                all_metrics.append(metrics)
+                all_specs.append(spec_png)
+
+            analysis = mod.analyse_with_claude(all_metrics, all_specs)
+            self.finished.emit(analysis)
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"Inspection failed:\n{traceback.format_exc()}")
+
+
+class StemInspectDialog(QDialog):
+
+    def __init__(self, track_paths: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔬 Stem Inspection — Claude Analysis")
+        self.setMinimumSize(820, 600)
+        self.setStyleSheet(
+            "background:#0a0a14;color:#ccc;"
+            "QTextEdit{background:#0e0e1c;border:1px solid #2a2a40;"
+            "color:#ccc;font-family:'Courier New';font-size:11px;border-radius:4px;}"
+            "QPushButton{background:#1a1a2a;border:1px solid #3a3a55;color:#aaa;"
+            "border-radius:4px;padding:4px 14px;font-size:11px;font-weight:bold;}"
+            "QPushButton:hover{background:#2a2a3a;color:#fff;}"
+            "QPushButton#ApplyBtn{border-color:#aa66ff;color:#cc99ff;}"
+            "QPushButton#ApplyBtn:hover{background:#2a1a3a;}"
+        )
+        self._paths = track_paths
+        self._analysis = ""
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        tracks_text = " + ".join(p.split("/")[-1][:40] for p in track_paths)
+        hdr = QLabel(f"Analysing: {tracks_text}")
+        hdr.setStyleSheet("color:#aa66ff;font-weight:bold;font-size:11px;")
+        hdr.setWordWrap(True)
+        root.addWidget(hdr)
+
+        self._text = QTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setPlaceholderText(
+            "Computing metrics and spectrograms…\n"
+            "Sending to Claude claude-sonnet-4-6 for analysis…\n\n"
+            "(stems must be ● READY on both decks)")
+        root.addWidget(self._text, 1)
+
+        btn_row = QHBoxLayout()
+        self._apply_btn = QPushButton("Apply Changes to stems.py + Rebuild")
+        self._apply_btn.setObjectName("ApplyBtn")
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.clicked.connect(self._apply_and_rebuild)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._apply_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self._close_btn)
+        root.addLayout(btn_row)
+
+        # Start worker thread
+        import threading
+        self._worker = _InspectWorker(track_paths)
+        self._worker.finished.connect(self._on_done)
+        self._worker.error.connect(self._on_error)
+        t = threading.Thread(target=self._worker.run, daemon=True)
+        t.start()
+
+    def _on_done(self, analysis: str):
+        self._analysis = analysis
+        self._text.setPlainText(analysis)
+        self._apply_btn.setEnabled(True)
+
+    def _on_error(self, msg: str):
+        self._text.setPlainText(f"ERROR:\n{msg}")
+
+    def _apply_and_rebuild(self):
+        if not self._analysis:
+            return
+        import pathlib, subprocess
+        stems_src_path = pathlib.Path(__file__).parent.parent.parent / "udj" / "core" / "stems.py"
+        if not stems_src_path.exists():
+            QMessageBox.warning(self, "Source Not Found",
+                                f"Cannot find source stems.py at:\n{stems_src_path}\n\n"
+                                "Run from the source directory, not the bundled app.")
+            return
+
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+            stems_src = stems_src_path.read_text()
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                messages=[{"role": "user", "content":
+                    f"Based on this stem quality analysis:\n\n{self._analysis}\n\n"
+                    f"Here is the current stems.py:\n\n```python\n{stems_src}\n```\n\n"
+                    "Apply the recommended parameter changes. Return ONLY the complete "
+                    "updated Python source. No explanation, no markdown fences."}]
+            )
+            new_src = resp.content[0].text.strip()
+            if new_src.startswith("```"):
+                lines = new_src.split("\n")
+                new_src = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+
+            compile(new_src, "stems.py", "exec")   # syntax check
+
+            backup = stems_src_path.with_suffix(".py.bak")
+            stems_src_path.rename(backup)
+            stems_src_path.write_text(new_src)
+
+            QMessageBox.information(self, "Applied",
+                f"stems.py updated (backup: {backup.name})\n\n"
+                "Now rebuild the app:\n"
+                "  cd ~/Desktop/U-DJ\n"
+                "  python3 -m PyInstaller udj.spec --clean -y\n"
+                "  rm -rf ~/Desktop/U-DJ.app\n"
+                "  cp -R dist/U-DJ.app ~/Desktop/U-DJ.app")
+        except SyntaxError as e:
+            QMessageBox.critical(self, "Syntax Error",
+                                 f"Claude returned invalid Python:\n{e}\nNo changes made.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))

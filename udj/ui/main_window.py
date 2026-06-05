@@ -107,6 +107,8 @@ class MainWindow(QMainWindow):
 
         # Give the MIDI controller a reference so shift+CFX can scroll/load
         self.controller.library = self.library
+        # Give the library a reference to the engine for stem inspection
+        self.library.set_engine(self.engine)
 
     # ──────────────────────────────────────────────────────────
     #  Track loading
