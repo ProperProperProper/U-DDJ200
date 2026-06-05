@@ -398,7 +398,7 @@ class DDJ200:
                     elif BL_BASE+4 <= note <= BL_BASE+6:      bot_idx = note - BL_BASE - 4
                     elif SP_BASE+4 <= note <= SP_BASE+6:      bot_idx = note - SP_BASE - 4
 
-                    _STEM_MAP = {0:"vocals",1:"bass",2:"other",3:"drums"}
+                    _STEM_MAP = {0:"vocals",1:"bass",2:"drums",3:"other"}
                     _FX_CYCLE = ["ECHO","DELAY","REVERB","FILTER"]
                     deck = self.engine.deck(d)
 

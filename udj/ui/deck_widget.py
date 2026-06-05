@@ -238,11 +238,10 @@ class DeckWidget(QWidget):
         _BL_LABELS  = ["1/4","1/2","1","2","4","8","16"]
         _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4"]
         _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0]
-        # Top row: mute toggles. Bottom row: echo pads with FX type cycling.
-        # Order: VOC | BASS | SYNTH | DRM  /  VOC ECH | BSS ECH | DRM ECH
-        _STM_LABELS = ["VOC","BASS","SYNTH","DRM",  "VOC\nECH","BSS\nECH","DRM\nECH"]
-        _STM_NAMES  = ["vocals","bass","other","drums","vocals","bass","drums"]
-        _STM_COLORS = ["#aa44ff","#ff9900","#44aaff","#ff4466",
+        # Top row: VOC | BASS | DRM | SYNTH  /  Bottom: VOC ECH | BSS ECH | DRM ECH
+        _STM_LABELS = ["VOC","BASS","DRM","SYNTH",  "VOC\nECH","BSS\nECH","DRM\nECH"]
+        _STM_NAMES  = ["vocals","bass","drums","other","vocals","bass","drums"]
+        _STM_COLORS = ["#aa44ff","#ff9900","#ff4466","#44aaff",
                        "#aa44ff","#ff9900","#ff4466"]
 
         self._mode_btns: dict[str, QPushButton] = {}
