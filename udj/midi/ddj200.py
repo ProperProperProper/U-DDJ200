@@ -429,7 +429,7 @@ class DDJ200:
                                 # so active_stems check would always return True right
                                 # after muting. Target=1.0 means unmuting, 0.0 = muting.
                                 target = deck._stem_fade_target.get(name, 1.0)
-                                vel = LED_ON if target > 0.5 else LED_OFF
+                                vel = LED_OFF if target > 0.5 else LED_ON  # dark=playing, lit=muted
                             else:
                                 vel = LED_OFF
                             self._send(PAD_N[d], top_idx,            vel)
@@ -704,7 +704,8 @@ class DDJ200:
             else:
                 for i, name in enumerate(_stem_order):
                     target = deck._stem_fade_target.get(name, 1.0)
-                    _pad_led(i, LED_ON if target > 0.5 else LED_OFF)
+                    # Dark = playing (normal), Lit = muted (cut)
+                    _pad_led(i, LED_OFF if target > 0.5 else LED_ON)
                 echo_active = getattr(deck, '_echo_active', [False, False, False])
                 for i in range(3):
                     _pad_led(4 + i, LED_ON if echo_active[i] else LED_OFF)

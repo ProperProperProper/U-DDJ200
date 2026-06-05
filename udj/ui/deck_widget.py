@@ -480,9 +480,9 @@ class DeckWidget(QWidget):
                 lbl  = f"● {i+1}" if set_ else f"CUE {i+1}"
                 if set_:
                     btn.setStyleSheet(
-                        f"QPushButton{{background:{col}44;border:2px solid {col};"
+                        f"QPushButton{{background:#1a1a1a;border:2px solid {col};"
                         f"border-radius:6px;color:{col};font-size:9px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}88;}}")
+                        f"QPushButton:pressed{{background:#2a2a2a;}}")
                 else:
                     btn.setStyleSheet(
                         "QPushButton{background:#141418;border:1px solid #2a2a35;"
@@ -497,9 +497,9 @@ class DeckWidget(QWidget):
                           abs(self.deck._current_loop_beats - BEAT_LOOP_SIZES[i]) < 0.01)
                 if active:
                     btn.setStyleSheet(
-                        f"QPushButton{{background:{col}55;border:2px solid {col};"
-                        f"border-radius:6px;color:{col};font-size:11px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col}99;}}")
+                        f"QPushButton{{background:{col};border:2px solid {col};"
+                        f"border-radius:6px;color:#000;font-size:11px;font-weight:bold;}}"
+                        f"QPushButton:pressed{{background:{col};}}")
                 else:
                     btn.setStyleSheet(
                         f"QPushButton{{background:#111;border:1px solid #2a2a35;"
@@ -512,8 +512,8 @@ class DeckWidget(QWidget):
                 lbl = self._bj_labels[i] if i < len(self._bj_labels) else ""
                 btn.setStyleSheet(
                     f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                    f"border-radius:6px;color:{col}99;font-size:11px;font-weight:bold;}}"
-                    f"QPushButton:pressed{{background:{col}33;}}")
+                    f"border-radius:6px;color:#887700;font-size:11px;font-weight:bold;}}"
+                    f"QPushButton:pressed{{background:#1a1400;}}")
                 btn.setText(lbl); btn.setChecked(False)
 
             elif mode == "STEMS":
@@ -522,41 +522,42 @@ class DeckWidget(QWidget):
                 ready = self.deck.stems_ready
 
                 if i < 4:
-                    # Top row: mute toggles — VOC BASS SYNTH DRM
+                    # Top row: mute toggles.
+                    # DARK = stem playing (normal). LIT = stem muted (cut).
                     lbl    = self._stm_labels[i]
-                    active = name in self.deck.active_stems if ready else True
-                    if active:
+                    target = self.deck._stem_fade_target.get(name, 1.0) if ready else 1.0
+                    muted  = target < 0.5
+                    if muted:
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col};border:2px solid {col};"
                             f"border-radius:6px;color:#000;font-size:10px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col}cc;}}")
+                            f"QPushButton:pressed{{background:{col};}}")
                     else:
                         btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:2px solid {col}44;"
-                            f"border-radius:6px;color:{col}55;font-size:10px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:#1a1a22;}}")
-                    btn.setText(lbl); btn.setChecked(active)
+                            "QPushButton{background:#111;border:1px solid #333;"
+                            "border-radius:6px;color:#555;font-size:10px;font-weight:bold;}"
+                            "QPushButton:pressed{background:#1a1a22;}")
+                    btn.setText(lbl); btn.setChecked(muted)
 
                 else:
-                    # Bottom row: echo pads — VOC ECH / BSS ECH / DRM ECH
-                    echo_idx = i - 4  # 0, 1, 2
+                    # Bottom row: echo pads
+                    echo_idx    = i - 4
                     echo_active = getattr(self.deck, '_echo_active', [False]*3)
                     echo_fx     = getattr(self.deck, '_echo_fx_type', ["ECHO"]*3)
-                    is_on = echo_active[echo_idx] if echo_idx < len(echo_active) else False
-                    fx_name = echo_fx[echo_idx] if echo_idx < len(echo_fx) else "ECHO"
-                    # Label: stem name + FX type
-                    _echo_stem_label = {0:"VOC",1:"BSS",2:"DRM"}
-                    lbl = f"{_echo_stem_label.get(echo_idx,'?')}\n{fx_name[:3]}"
+                    is_on   = echo_active[echo_idx] if echo_idx < len(echo_active) else False
+                    fx_name = echo_fx[echo_idx]     if echo_idx < len(echo_fx)     else "ECHO"
+                    _lbl_map = {0:"VOC",1:"BSS",2:"DRM"}
+                    lbl = f"{_lbl_map.get(echo_idx,'?')}\n{fx_name[:3]}"
                     if is_on:
                         btn.setStyleSheet(
                             f"QPushButton{{background:{col};border:2px solid {col};"
                             f"border-radius:6px;color:#000;font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col}cc;}}")
+                            f"QPushButton:pressed{{background:{col};}}")
                     else:
                         btn.setStyleSheet(
-                            f"QPushButton{{background:#111;border:1px solid {col}55;"
-                            f"border-radius:6px;color:{col}88;font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col}33;}}")
+                            "QPushButton{background:#111;border:1px solid #444;"
+                            "border-radius:6px;color:#555;font-size:8px;font-weight:bold;}"
+                            "QPushButton:pressed{background:#1a1a22;}")
                     btn.setText(lbl); btn.setChecked(is_on)
 
 
