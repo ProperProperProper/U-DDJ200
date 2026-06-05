@@ -401,6 +401,10 @@ class DDJ200:
                         deck.toggle_stem(name)
                         active = name in deck.active_stems
                         self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
+                    # Shift + stem pad = echo out: engage echo at high depth
+                    if self._shift[d]:
+                        self.engine.mixer.set_fx_type(d, "ECHO")
+                        self.engine.mixer.set_fx_raw(d, 110)  # ~86% depth — long echo tail
                     return
 
                 if mode == "HOT CUE" and 0x00 <= note <= 0x07:

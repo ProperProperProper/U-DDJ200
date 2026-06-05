@@ -323,27 +323,33 @@ class MixerWidget(QWidget):
                 has_track = deck.audio is not None
                 stems_ready = deck.stems_ready
 
-                # Update each stem pill: bright = active, dim = muted
+                # Update each stem pill: bright filled = ON, dark strikethrough = OFF
                 for i, sname in enumerate(_SNAMES):
                     if i >= len(self._stem_btns[ch]):
                         continue
                     pill = self._stem_btns[ch][i]
                     active = sname in deck.active_stems
                     col = _STEM_COLORS.get(sname, "#888")
-                    if active and stems_ready:
-                        pill.setStyleSheet(
-                            f"color:{col};font-size:7px;font-weight:bold;"
-                            f"background:#0a0a14;border:1px solid {col};"
-                            f"border-radius:3px;padding:1px 2px;")
-                    elif not stems_ready:
+                    _labels = {"vocals": "VOC", "drums": "DRM",
+                               "bass": "BSS", "other": "MLY"}
+                    label = _labels.get(sname, sname[:3].upper())
+                    if not stems_ready:
+                        pill.setText(label)
                         pill.setStyleSheet(
                             "color:#333;font-size:7px;font-weight:bold;"
-                            "background:#0a0a14;border:1px solid #222;"
+                            "background:#111;border:1px solid #222;"
                             "border-radius:3px;padding:1px 2px;")
-                    else:
+                    elif active:
+                        pill.setText(label)
                         pill.setStyleSheet(
-                            f"color:#333;font-size:7px;font-weight:bold;"
-                            f"background:#0a0a14;border:1px solid #333;"
+                            f"color:#000;font-size:7px;font-weight:bold;"
+                            f"background:{col};border:1px solid {col};"
+                            f"border-radius:3px;padding:1px 2px;")
+                    else:
+                        pill.setText(f"╳")
+                        pill.setStyleSheet(
+                            f"color:#444;font-size:7px;font-weight:bold;"
+                            f"background:#111;border:1px solid #333;"
                             f"border-radius:3px;padding:1px 2px;")
 
                 lbl = self._stems_lbl[ch]
