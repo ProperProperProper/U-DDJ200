@@ -1,110 +1,109 @@
 # U-DJ
 
-Professional DJ app for macOS. Pioneer DDJ-200 controller. AI stem separation. Rekordbox-style beat sync.
+Professional DJ app for macOS. Built for **Detroit techno, house, trance and dance music**. Pioneer DDJ-200 controller. AI stem separation. Rekordbox-style beat sync.
 
-<img width="1467" height="830" alt="Screenshot 2026-06-04 at 8 57 39 PM" src="https://github.com/user-attachments/assets/6014058a-73c6-4ea5-8669-2a57d2bf9b49" />
+<img width="1467" height="830" alt="U-DJ Screenshot" src="https://github.com/user-attachments/assets/6014058a-73c6-4ea5-8669-2a57d2bf9b49" />
 
 ---
 
 ## Setup
 
-1. Connect DDJ-200 via USB before launching
+1. Connect DDJ-200 via USB **before** launching
 2. Open `U-DJ.app` from your Desktop
 3. Click **+ Add Folder** → select your music folder
-4. Tracks analyse automatically in the background (BPM, key, beat grid, cues)
-5. Drag a track onto each deck or double-click a track to load it
+4. Tracks analyse automatically in the background
+5. Drag a track onto each deck or double-click to load
 6. Press PLAY
 
 ---
 
-## DDJ-200 Control Reference
+## DDJ-200 — Full Control Reference
 
 ### Transport
 
 | Control | Action |
 |---------|--------|
 | **PLAY/PAUSE** | Play / pause |
-| **CUE** | Set cue / return to cue / stutter play |
+| **CUE** | Set cue / return to cue / stutter play (hold) |
 | **Shift + CUE** | Jump to cue and stop |
-| **SYNC** | Sync this deck to the other (see Sync section) |
+| **SYNC** | This deck becomes follower, other deck becomes master — snaps bar phase immediately |
 | **Shift + SYNC** | Set loop IN point |
-| **SYNC (2nd press)** | Set loop OUT point and activate |
-
-### Jog Wheel
-
-| Control | Action |
-|---------|--------|
-| **Touch surface (playing)** | Scratch — suspends sync momentarily |
-| **Rim only** | Pitch bend |
-| **Shift + Rim** | Key shift ±1 semitone per 5 ticks |
+| **SYNC (2nd press while follower)** | Re-snap to master's current bar phase |
 
 ### Tempo Slider
 
 Adjusts playback rate ±16%. Moving the slider while sync is active breaks sync for that deck.
 
----
-
-## Stems & EQ Knobs
-
-This is the core of U-DJ. The **HI / MID / LOW knobs** on the DDJ-200 do double duty:
-
-| Mode | How to activate | What the knobs do |
-|------|----------------|-------------------|
-| **Stem blend** | Normal (no Shift) | Crossfade between two stem groups |
-| **EQ** | Hold **Shift** | 3-band EQ (kill to +10 dB) |
-
-### Stem Blend Mode (normal, no Shift)
-
-Each knob is a crossfader between two stems. **Center = both stems full.**
-
-| Knob | Turn LEFT | Center | Turn RIGHT |
-|------|-----------|--------|------------|
-| **HI** | Kill vocals → only drums | Both full | Kill drums → only vocals |
-| **MID** | Kill bass → only other/synths | Both full | Kill other → only bass |
-| **LOW** | Kill lead synth → only pads | Both full | Kill pads → only lead |
-
-Hard left and hard right are **hard cuts** — complete silence on that stem.
-
-> Stems take ~90 seconds to separate the first time (demucs ML). Check the **● STEMS READY** indicator in the mixer panel. Knobs have no effect on audio until stems are ready — the full track plays until then.
-
-### EQ Mode (hold Shift)
-
-Hold **Shift** then turn HI / MID / LOW for 3-band EQ. Uses soft-pickup — EQ only engages once the knob crosses the current EQ value, preventing jumps.
-
-| Knob | Band | Range |
-|------|------|-------|
-| **Shift + HI** | High (3.5 kHz+) | Kill to +10 dB |
-| **Shift + MID** | Mid (200 Hz – 3.5 kHz) | Kill to +10 dB |
-| **Shift + LOW** | Low (0 – 200 Hz) | Kill to +10 dB |
-
-### CFX Super Knob
-
-Controls **Color FX depth** directly. Select FX type from the mixer panel dropdown (FILTER, DELAY, REVERB, FLANGER, PHASER, DRIVE).
-
----
-
-## Sync
-
-Press **SYNC** on the deck you want as master. The other deck locks to its tempo and bar phase.
+### Jog Wheel
 
 | Action | Result |
 |--------|--------|
-| SYNC on a deck | That deck becomes master, other snaps to bar |
-| SYNC on master again | Re-snaps the follower |
-| SYNC on follower (both playing) | Follower promotes to master |
-| PLAY while sync armed | Snaps to master bar phase on play-start |
+| Touch surface | Scratch — suspends sync momentarily |
+| Rim only | Pitch bend (accumulates, decays 230ms) |
+| Shift + Rim | Key shift ±1 semitone per 5 ticks |
 
-Sync is continuous — phase nudge corrects drift automatically. The beat grid strip at the top shows both decks: when bar markers align, you're locked.
+### EQ / FX Knobs
+
+| Knob | Action |
+|------|--------|
+| **HI** | EQ High — kill to +10 dB (soft-pickup) |
+| **MID** | EQ Mid — kill to +10 dB |
+| **LOW** | EQ Low — kill to +10 dB |
+| **CFX Super Knob** | Color FX depth — centre = bypass |
+
+### Crossfader & Channel Fader
+
+- **Channel fader** — per-deck volume (p² taper)
+- **Crossfader** — constant-power cosine-law A→B blend
+- **PFL button** — headphone cue for that deck
+- **Shift + PFL** — Key Sync: auto-match key to master via Camelot wheel (≤6 semitones)
 
 ---
 
 ## Performance Pads
 
-Switch pad mode with **Shift + first BEAT LOOP pad**:
+### Layout
 
-`HOT CUE → BEAT LOOP → STEMS → BEAT JUMP → PAD FX → (loop)`
+```
+Top row:    [ VOC ] [ BASS ] [ DRM ] [ SYNTH ]   ← mode function (see below)
+Bottom row: [ VOC ] [ BASS ] [ DRM ] [ ●8● ]
+             ECH     ECH     ECH    (mode cycle)
+```
 
-Default on startup: **BEAT LOOP**
+**Pad 8** (bottom-right, hidden on screen) cycles pad modes:
+
+`STEMS → HOT CUE → BEAT LOOP → BEAT JUMP → STEMS`
+
+---
+
+### STEMS mode (default)
+
+**Top row — stem mute toggles:**
+
+| Pad | Stem | LED dark | LED lit |
+|-----|------|----------|---------|
+| 1 | VOC (Vocals) | Playing | **Muted** |
+| 2 | BASS | Playing | **Muted** |
+| 3 | DRM (Drums) | Playing | **Muted** |
+| 4 | SYNTH (Other) | Playing | **Muted** |
+
+Press to mute → pad **lights up**. Press again → stem returns, pad goes **dark**. Smooth 10ms crossfade on every cut — no clicks.
+
+**Bottom row — echo effects:**
+
+| Pad | Effect |
+|-----|--------|
+| 5 | VOC ECHO — apply echo to vocal stem |
+| 6 | BSS ECHO — apply echo to bass |
+| 7 | DRM ECHO — apply echo to drums |
+
+- Press to toggle echo ON/OFF (lit = active, dark = off)
+- **Shift + echo pad** — cycle FX type: `ECHO → DELAY → REVERB → FILTER`
+- Only one echo active at a time
+
+Stems must show **● STEMS READY** in the mixer before pads are active. Shows **◌ STEMS LOADING…** while separating (~90s first time, instant from cache).
+
+---
 
 ### HOT CUE mode
 
@@ -112,78 +111,81 @@ Default on startup: **BEAT LOOP**
 |--------|--------|
 | Pad (empty) | Set cue at current position (beat-snapped) |
 | Pad (set, lit) | Jump to cue and play |
-| Shift + pad | Delete cue |
+| Right-click pad | Delete cue |
 
-Up to 8 auto cue points (INTRO / DROP / BUILD / BREAK / OUTRO) load automatically from energy analysis.
+Up to 8 auto cue points (INTRO / DROP / BUILD / BREAK / OUTRO) loaded automatically.
+
+---
 
 ### BEAT LOOP mode
 
-Pads left→right: `¼  ½  1  2  4  8  16  32` bars
+Pads left→right: `1/4  1/2  1  2  4  8  16` bars
 
 | Action | Result |
 |--------|--------|
-| Pad | Activate loop at that size |
+| Pad | Activate loop at that size (lit = active) |
 | Same pad | Exit loop |
-| Shift + pads 1–4 (loop active) | Halve loop |
-| Shift + pads 5–8 (loop active) | Double loop |
 
-Loop start snaps to nearest phrase → bar → beat.
+Manual loop: **Shift + SYNC** → set loop IN, **SYNC** → set loop OUT.
 
-### STEMS mode
-
-| Action | Result |
-|--------|--------|
-| Pads 1–4 | Toggle stem on/off (drums / bass / other / vocals) |
-| Pads 5–8 | Hold to solo a stem (all others mute while held) |
+---
 
 ### BEAT JUMP mode
 
-| Pads 1–4 | Pads 5–8 |
+| Pads 1–4 | Pads 5–7 |
 |----------|----------|
 | −1 bar | +1 bar |
 | −2 bars | +2 bars |
 | −4 bars | +4 bars |
-| −8 bars | +8 bars |
-
-### PAD FX mode
-
-Hold to apply, release to bypass:
-
-| Pad | Effect |
-|-----|--------|
-| 1 | Filter HPF |
-| 2 | Filter LPF |
-| 3 | Echo (BPM-synced) |
-| 4 | Roll (BPM-synced) |
-| 5 | Reverb |
-| 6 | Flanger |
-| 7 | Phaser |
-| 8 | Echo Out |
 
 ---
 
-## Channel Fader & Crossfader
+## Stems — How It Works
 
-| Control | Function |
-|---------|----------|
-| **Channel fader** | Per-deck volume |
-| **Crossfader** | Constant-power A→B blend |
-| **PFL button** | Headphone cue for that deck |
-| **Shift + PFL** | Key Sync — auto-match key to master using Camelot wheel (≤6 semitones) |
+U-DJ uses **htdemucs_ft** (demucs ML model, Apple Silicon MPS accelerated) to separate tracks into 4 stems. Post-processing is tuned specifically for **Detroit techno / electronic music**:
+
+| Stem | What it contains | Post-processing |
+|------|-----------------|-----------------|
+| **VOC** | Vocal samples, stabs | HP 100Hz, tight gate -20dBFS, presence +3dB 1.5-4kHz |
+| **BASS** | Bassline, 303 acid | LP 1200Hz (keeps acid squeal), sub +3dB, mono <120Hz |
+| **DRM** | Kick, snare, hats | HP 30Hz (preserves kick body), transient boost, hat air +3dB >10kHz |
+| **SYNTH** | Synths, pads, leads | 8th-order HP 120Hz (kills bass bleed), presence +2dB |
+
+**Drum bleed removed from vocals** via spectral subtraction (hi-hats above 3kHz). **Transient suppressor** on synth stem kills leaked drum hits.
+
+**First separation:** ~90 seconds on Apple Silicon M-series  
+**Subsequent loads:** instant from cache (`~/udj_cache/`)
 
 ---
 
-## Key Shift
+## Sync
 
-- **UI ▲/▼ buttons** or **Shift + jog rim** → ±1 semitone per press/5 ticks
-- **UI 0 button** → reset to original key
+Press **SYNC** on the incoming deck → it locks to the playing deck (follower) and snaps bar phase immediately. Continuous phase nudge corrects drift. The beat grid strip at top shows both decks — when bar markers align, you're locked.
+
+---
+
+## Color FX
+
+CFX Super Knob controls depth. Select type from mixer panel dropdown:
+
+`FILTER · ECHO · ROLL · DELAY · REVERB · FLANGER · PHASER · DRIVE`
+
+Centre = bypass on all effects.
+
+---
+
+## Key Shift & Key Sync
+
+- **UI ▲/▼ buttons** or **Shift + jog rim** → shift pitch ±1 semitone
+- **UI 0 button** → reset
+- **Shift + PFL** → Key Sync via Camelot wheel
 - Key display turns **amber** when shifted
 
 ---
 
 ## Loudness Normalisation
 
-Press **NORM** on either deck panel to apply EBU R128 gain normalisation. Tracks hit a consistent level. Toggle per deck independently.
+**NORM** button per deck applies EBU R128 normalisation. Toggle per deck independently.
 
 ---
 
@@ -191,53 +193,27 @@ Press **NORM** on either deck panel to apply EBU R128 gain normalisation. Tracks
 
 | Dot | Colour | Meaning |
 |-----|--------|---------|
-| ● | Green | Fully analysed — BPM, key, beat grid, cues, stems cached |
+| ● | Green | Fully analysed — BPM, key, beats, cues, stems cached |
 | ● | Blue | BPM/key done, stems not yet cached |
 | ● | Amber | Beat grid done, some metadata missing |
 | ● | Orange | BPM only |
 | ○ | Grey | Not yet analysed |
 
-**+ Add Folder** — replaces the library with a new folder scan.
+**+ Add Folder** — replaces library with new folder scan  
+**⟳ Analyse All** — queues all tracks for analysis and stem pre-computation
 
-**⟳ Analyse All** — queues all tracks for full analysis and stem pre-computation.
-
-### Pre-compute stems for your whole library (do this before a gig)
-
+**Pre-compute stems before a gig:**
 ```bash
 python3 stem_example.py /path/to/your/music
 ```
 
-Stems cached to `~/udj_cache/` as WAV files. Next load is instant.
-
 ---
 
-## Stems — How It Works
+## 🔬 Stem Inspection Tool (dev)
 
-U-DJ uses **htdemucs_6s** (6-stem ML model) to separate:
+Load tracks on the decks, then click **🔬 Inspect Stems** in the library toolbar. This sends spectrogram images and waveform metrics to Claude claude-sonnet-4-6, which analyses stem separation quality and recommends post-processing improvements specific to your tracks.
 
-| Stem | Content |
-|------|---------|
-| Vocals | Voice, spoken word |
-| Drums | Kick, snare, hats, cymbals |
-| Bass | Sub-bass, bass line |
-| Other | Remaining elements |
-| Guitar / Lead | Lead synths, melodic lines |
-| Piano / Pad | Chords, pads, sustained textures |
-
-Falls back to htdemucs_ft (4-stem) if 6s is unavailable, with DSP split of "other" into lead/pad at 1500 Hz.
-
-Post-processing tuned for **Detroit techno / electronic music**:
-- Kick: sub-body preserved to 30 Hz, transient punch enhanced
-- Bass: high-cut at 1200 Hz so 303 acid resonance passes through
-- Drums: +2 dB hat air above 10 kHz, −3 dB de-mud at 300 Hz
-
-Per-channel status in the mixer panel:
-
-| Badge | Meaning |
-|-------|---------|
-| `○ NO TRACK` | Nothing loaded on this deck |
-| `◌ STEMS LOADING…` | Separating (~90s first time, instant from cache) |
-| `● STEMS READY` | Stem blend knobs are live |
+Requires `ANTHROPIC_API_KEY` in your environment.
 
 ---
 
@@ -248,107 +224,73 @@ Per-channel status in the mixer panel:
 | `~/.udj/library.db` | Track database |
 | `~/.udj/events.db` | Sync/quantise event log |
 | `~/udj_cache/<hash>/` | Stem WAV cache |
+| `~/.cache/torch/hub/checkpoints/` | Demucs model weights |
 
 ---
 
 ## Build from Source
 
-These instructions cover everything from a clean macOS machine to a running `.app` bundle.
-
----
-
-### 1. System requirements
+### 1. Requirements
 
 | | Minimum | Recommended |
 |---|---|---|
 | **OS** | macOS 12 Monterey | macOS 13+ |
-| **Chip** | Intel x86_64 | Apple Silicon (M1/M2/M3) — MPS makes stem separation 5–10× faster |
-| **Python** | 3.9 | 3.9 (tested — 3.10+ untested) |
-| **Disk** | 2 GB free | 5 GB (models + stem cache) |
+| **Chip** | Intel x86_64 | Apple Silicon (M1/M2/M3/M4) |
+| **Python** | 3.9 | 3.9 (tested) |
+| **Disk** | 2 GB | 5 GB |
 | **RAM** | 8 GB | 16 GB |
-| **Controller** | — | Pioneer DDJ-200 (USB) |
-
----
 
 ### 2. Install Python 3.9
-
-Check if you already have it:
-
-```bash
-python3 --version
-```
-
-If not, install via [python.org](https://www.python.org/downloads/) or Homebrew:
 
 ```bash
 brew install python@3.9
 ```
 
-Make sure `python3` resolves to 3.9:
-
-```bash
-python3.9 --version   # should print Python 3.9.x
-```
-
----
-
-### 3. Clone the repo
+### 3. Clone
 
 ```bash
 git clone https://github.com/PahtrikProper/U-DJ.git
 cd U-DJ
 ```
 
----
+### 4. Install dependencies
 
-### 4. Install Python dependencies
-
-Install the core requirements first:
-
+**Core:**
 ```bash
 pip3 install -r requirements.txt
-```
-
-Then install the ML stack. **Apple Silicon (M1/M2/M3):**
-
-```bash
-pip3 install torch==2.8.0 torchaudio==2.8.0
-pip3 install demucs==4.0.1
 pip3 install pyloudnorm
 ```
 
-**Intel Mac:**
-
+**ML stack — Apple Silicon:**
 ```bash
-pip3 install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip3 install demucs pyloudnorm
+pip3 install torch==2.8.0 torchaudio==2.8.0
+pip3 install demucs==4.0.1
+pip3 install "audio-separator[cpu]"
 ```
 
-Install PyInstaller for building the `.app`:
+**ML stack — Intel Mac:**
+```bash
+pip3 install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip3 install demucs pyloudnorm "audio-separator[cpu]"
+```
 
+**Build tool:**
 ```bash
 pip3 install pyinstaller==6.20.0
 ```
 
-Verify everything loaded:
-
+**Verify:**
 ```bash
 python3 -c "import torch, torchaudio, demucs, sounddevice, PyQt6; print('All good')"
 ```
 
----
-
-### 5. Run directly (no build needed)
+### 5. Run directly
 
 ```bash
 python3 main.py
 ```
 
-This is the fastest way to test changes. The app runs identically to the built `.app`.
-
----
-
-### 6. Build the .app bundle
+### 6. Build .app bundle
 
 ```bash
 python3 -m PyInstaller udj.spec --clean -y
@@ -357,39 +299,19 @@ cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
 open ~/Desktop/U-DJ.app
 ```
 
-The build takes 60–90 seconds. The resulting `.app` is fully self-contained — no Python install needed to run it on another Mac of the same architecture.
-
-> **Note:** The `.app` built on Apple Silicon will not run on Intel Macs and vice versa. Build on the target architecture.
-
----
+> Always use `--clean -y`. Never incremental builds.
 
 ### 7. First launch
 
-1. macOS will ask for **Microphone access** (required for audio output — approve it)
-2. If a DDJ-200 is connected, it will be detected automatically — no driver install needed
-3. Click **+ Add Folder** and point it at your music directory
-4. Tracks start analysing immediately in the background
-5. Load a track onto a deck — the first stem separation triggers a one-time **~50 MB model download** (demucs htdemucs_ft). Subsequent loads are instant from cache
+1. Approve **Microphone access** when prompted
+2. DDJ-200 detected automatically — no driver needed
+3. Click **+ Add Folder** → select your music
+4. First stem separation triggers a one-time **~50 MB model download**
 
----
+### 8. Dev tools
 
-### 8. Rebuilding after code changes
-
-Always do a full clean build — incremental builds can silently include stale files:
-
+**Stem inspection** (analyses separation quality with Claude):
 ```bash
-python3 -m PyInstaller udj.spec --clean -y
-rm -rf ~/Desktop/U-DJ.app
-cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
+export ANTHROPIC_API_KEY=sk-ant-...
+python3 dev_inspect_stems.py track1.wav track2.wav
 ```
-
----
-
-### 9. File locations
-
-| Path | Contents |
-|------|----------|
-| `~/.udj/library.db` | Track database (BPM, key, beat grid, cues) |
-| `~/.udj/events.db` | Sync/quantise event log |
-| `~/udj_cache/<hash>/` | Stem WAV cache — delete to force re-separation |
-| `~/.cache/torch/hub/checkpoints/` | Demucs model weights |
