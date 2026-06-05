@@ -225,60 +225,58 @@ class DeckWidget(QWidget):
         self._stem_btns: dict[str, QPushButton] = {}
 
         # ── Performance pads — DDJ-200 layout ────────────────
-        # Mode selector row
         self._pad_mode = "BEAT LOOP"
-        # Bottom row pads always = stems. Top row cycles through these 4 modes.
         _PAD_MODES_UI = [("HOT CUE","#ff3333"), ("BEAT LOOP","#00dd88"),
                          ("BEAT JUMP","#ffcc00"), ("PAD FX","#ff6600")]
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(3)
-        self._mode_btns: dict[str, QPushButton] = {}
-        for mode, color in _PAD_MODES_UI:
-            b = QPushButton(mode)
-            b.setCheckable(True)
-            b.setChecked(mode == "BEAT LOOP")
-            b.setFixedHeight(20)
-            b.setStyleSheet(
-                f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                f"border-radius:3px;color:#555;font-size:8px;font-weight:bold;padding:0 4px;}}"
-                f"QPushButton:checked{{background:{color}22;border:1px solid {color};color:{color};}}")
-            b.clicked.connect(lambda _, m=mode: self._set_pad_mode(m))
-            mode_row.addWidget(b)
-            self._mode_btns[mode] = b
-        mode_row.addStretch()
-        root.addLayout(mode_row)
 
-        # Pad grid — 2 rows × 4 cols (DDJ-200 layout: row0=pads5-8, row1=pads1-4)
         _HC_COLORS = ["#ff3333","#ff8800","#ffdd00","#00cc44",
                       "#00ccff","#4488ff","#aa44ff","#ff44aa"]
         _BL_LABELS = ["1/4","1/2","1","2","4","8","16","32"]
         _STEM_LABELS= ["DRUMS","BASS","OTHER","VOCALS","DRUMS►","BASS►","OTHER►","VOX►"]
         _STEM_COLORS= ["#ff4444","#ff9900","#44aaff","#aa44ff",
                        "#ff4444","#ff9900","#44aaff","#aa44ff"]
-        # Beat jump: pads 0-7 = [-1,-2,-4,-8 bars, +1,+2,+4,+8 bars]
         _BJ_LABELS  = ["-1","−2","−4","−8","+1","+2","+4","+8"]
         _BJ_BARS    = [-1.0,-2.0,-4.0,-8.0, 1.0, 2.0, 4.0, 8.0]
-        # Pad FX: each pad applies a different FX while held
         _PFX_LABELS = ["FILTER↓","FILTER↑","ECHO","ROLL",
                        "REVERB","FLANGE","PHASE","ECHO OUT"]
         _PFX_COLORS = ["#4499ff","#ff9944","#44ffbb","#ffcc00",
                        "#bb44ff","#ff4488","#ffdd44","#ffffff"]
 
         self._pad_btns: list[QPushButton] = []
+        self._mode_btns: dict[str, QPushButton] = {}
+
+        # All pad UI in one block: mode selector + 2 pad rows
         pads_outer = QVBoxLayout()
         pads_outer.setSpacing(3)
 
+        # Mode selector sits at the top of the pad block — same width as pads
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(3)
+        for mode, color in _PAD_MODES_UI:
+            b = QPushButton(mode)
+            b.setCheckable(True)
+            b.setChecked(mode == "BEAT LOOP")
+            b.setFixedHeight(18)
+            b.setStyleSheet(
+                f"QPushButton{{background:#111;border:1px solid #2a2a35;"
+                f"border-radius:3px;color:#555;font-size:7px;font-weight:bold;padding:0 3px;}}"
+                f"QPushButton:checked{{background:{color}22;border:1px solid {color};color:{color};}}")
+            b.clicked.connect(lambda _, m=mode: self._set_pad_mode(m))
+            mode_row.addWidget(b)
+            self._mode_btns[mode] = b
+        mode_row.addStretch()
+        pads_outer.addLayout(mode_row)
+
+        # Pad grid — top row (pads 4–7) + bottom row (pads 0–3, always stems)
         for row_i in range(2):
             pad_row = QHBoxLayout()
             pad_row.setSpacing(3)
             for col_i in range(4):
-                # DDJ-200: top row = pads 4–7, bottom row = pads 0–3
                 n = (1 - row_i) * 4 + col_i
                 btn = QPushButton()
                 btn.setFixedSize(54, 38)
                 btn.setCheckable(True)
                 btn.setProperty("pad_idx", n)
-                # right-click = clear hot cue
                 btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 btn.customContextMenuRequested.connect(
                     lambda _, i=n: self._pad_right_click(i))
