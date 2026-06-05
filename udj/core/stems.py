@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v9"   # shifts=4 + MelBand Roformer vocals (state-of-art) + techno post-processing
+STEMS_VERSION = "v10"  # v10: transient suppressor for other, tighter HP/LP, vocal HP 180 Hz, drum sub +4 dB
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -332,8 +332,9 @@ def _process_drums(audio: np.ndarray, sr: int,
     - Hard LP 8 kHz on bass-bleed band: strip low-bass contamination from demucs
     - Aggressive transient restore: tight attack (0.8ms) for industrial kick snap
     - Hat air +3 dB above 10 kHz: crisp techno hats cut through the mix
-    - De-mud −5 dB at 200–500 Hz: kill the boxy low-mid bleed aggressively
-    - Sub-kick boost +2 dB at 60-100 Hz: add punch back lost in separation
+    - De-mud −5 dB at 150–600 Hz: wider band (was 180-520 Hz) to kill full mud range
+    - Sub-kick boost +4 dB at 55-105 Hz: increased from +2 dB — sub being stolen by bass stem
+    - Transient gate (sustain suppress): attenuate sustained drum resonance that bleeds into "other"
     """
     from scipy.signal import sosfilt, butter
     nyq = sr / 2
@@ -351,12 +352,12 @@ def _process_drums(audio: np.ndarray, sr: int,
                                  attack_ms=0.8, release_ms=35.0,
                                  boost=kick_boost)
 
-    # 3. Sub-kick boost +2 dB at 60-100 Hz (kick body lost in separation)
+    # 3. Sub-kick boost +4 dB at 55-105 Hz (kick sub-body stolen by bass stem — needs stronger recovery)
     sos_kick_hp = butter(2, 55.0 / nyq,  "high", output="sos")
     sos_kick_lp = butter(2, min(105.0 / nyq, 0.99), "low",  output="sos")
     kick_L = sosfilt(sos_kick_lp, sosfilt(sos_kick_hp, audio64[:, 0]))
     kick_R = sosfilt(sos_kick_lp, sosfilt(sos_kick_hp, audio64[:, 1]))
-    kick_gain = 10.0 ** (2.0 / 20.0) - 1.0
+    kick_gain = 10.0 ** (4.0 / 20.0) - 1.0
     audio64[:, 0] += kick_L * kick_gain
     audio64[:, 1] += kick_R * kick_gain
 
@@ -366,13 +367,27 @@ def _process_drums(audio: np.ndarray, sr: int,
                     sosfilt(sos_air, audio64[:, 1])], axis=1)
     audio64 = audio64 + air * (10.0 ** (3.0 / 20.0) - 1.0)
 
-    # 5. De-mud −5 dB at 200–500 Hz (aggressive — techno kicks must be tight)
-    sos_mud_hp = butter(2, 180.0 / nyq, "high", output="sos")
-    sos_mud_lp = butter(2, 520.0 / nyq, "low",  output="sos")
+    # 5. De-mud −5 dB at 150–600 Hz (wider than before — kills boxy resonance across the full mud range)
+    sos_mud_hp = butter(2, 150.0 / nyq, "high", output="sos")
+    sos_mud_lp = butter(2, 600.0 / nyq, "low",  output="sos")
     mud_L = sosfilt(sos_mud_lp, sosfilt(sos_mud_hp, audio64[:, 0]))
     mud_R = sosfilt(sos_mud_lp, sosfilt(sos_mud_hp, audio64[:, 1]))
     audio64[:, 0] += mud_L * (10.0 ** (-5.0 / 20.0) - 1.0)
     audio64[:, 1] += mud_R * (10.0 ** (-5.0 / 20.0) - 1.0)
+
+    # 6. Transient gate — suppress sustained drum resonance that bleeds into "other".
+    #    Invert the transient detector: attenuate the NON-transient (sustained) portion.
+    #    Fast env / slow env > 1 → transient → keep; < 1 → sustain/bleed → reduce.
+    sustain_suppress = 0.35   # attenuate sustained tail by ~9 dB
+    for ch in range(2):
+        sig   = audio64[:, ch]
+        env_f = _rms_envelope(sig, 1.0,  sr)   # 1ms  fast — captures transients
+        env_s = _rms_envelope(sig, 60.0, sr)   # 60ms slow — captures sustained body
+        # When fast/slow < 1 (sustain region), blend in attenuation
+        ratio = np.where(env_s > 1e-6, env_f / env_s, 1.0)
+        # gate_gain: 1.0 during transients, sustain_suppress during sustained tails
+        gate_gain = np.clip(ratio, sustain_suppress, 1.0)
+        audio64[:, ch] = sig * gate_gain
 
     return audio64.astype(np.float32)
 
@@ -412,7 +427,8 @@ def _transient_enhance(audio: np.ndarray, sr: int,
 def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
     """
     Bass post-processing tuned for Detroit techno / 303 acid bass:
-    - High-cut at 1200 Hz (not 300 Hz) — 303 squeal/resonance lives at 400-1000 Hz
+    - High-cut at 900 Hz (tightened from 1200 Hz) — preserves 303 squeal (400-900 Hz)
+      while reducing synth mid bleed measured at 300-1200 Hz in T-1000 test tracks
     - Sub-bass mono-sum below 120 Hz (professional mastering practice)
     - Sub boost +3 dB below 60 Hz for Detroit kick-bass punch
     """
@@ -421,8 +437,9 @@ def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
 
     audio64 = audio.astype(np.float64)
 
-    # 1. High-cut at 1200 Hz — allows 303 acid squeal/resonance through (400-1000 Hz)
-    sos_lp = butter(6, min(1200.0 / nyq, 0.99), "low", output="sos")
+    # 1. High-cut at 900 Hz — tighter than 1200 Hz; preserves 303 squeal (400-900 Hz)
+    #    while reducing upper-mid bleed (300-1200 Hz synth content measured in bass stem)
+    sos_lp = butter(6, min(900.0 / nyq, 0.99), "low", output="sos")
     audio64 = np.stack([
         sosfilt(sos_lp, audio64[:, 0]),
         sosfilt(sos_lp, audio64[:, 1]),
@@ -453,7 +470,12 @@ def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
 def _process_other(audio: np.ndarray, sr: int) -> np.ndarray:
     """
     Other / synths — dance/techno tuning:
-    - Hard HP 120 Hz (8th-order): strip bass and kick bleed hard for clean synths
+    - Hard HP 150 Hz (10th-order): steeper than 120 Hz 8th-order — drums→synths bleed 0.71-0.91
+      is not just spectral, it is rhythmic/transient content; the steeper slope helps but the
+      transient suppressor below is the primary fix
+    - Transient suppressor (de-transient): subtract alpha * transient_component to kill
+      drum hits that leaked through demucs. Targets fast-attack events (< 5ms) that are
+      drum transients, not synth attacks.
     - Presence boost +2 dB at 2–6 kHz: synth leads cut through the mix
     - Air boost +1.5 dB above 12 kHz: open up pads and arpeggios
     """
@@ -462,10 +484,27 @@ def _process_other(audio: np.ndarray, sr: int) -> np.ndarray:
 
     audio64 = audio.astype(np.float64)
 
-    # Hard HP 120 Hz — 8th-order kills bass bleed decisively for techno synths
-    sos_hp = butter(8, min(120.0 / nyq, 0.99), "high", output="sos")
+    # Hard HP 150 Hz — 10th-order (steeper roll-off than 8th-order at 120 Hz)
+    sos_hp = butter(10, min(150.0 / nyq, 0.99), "high", output="sos")
     audio64 = np.stack([sosfilt(sos_hp, audio64[:, 0]),
                         sosfilt(sos_hp, audio64[:, 1])], axis=1)
+
+    # Transient suppressor — remove leaked drum hits from the other stem.
+    # Drum bleed is rhythmic/transient (attack < 5ms), not spectral bleed.
+    # Detect transient component = fast_env - slow_env; subtract alpha * that component.
+    # alpha=0.3: conservative enough not to eat synth attacks (which are also fast).
+    alpha = 0.3
+    for ch in range(2):
+        sig       = audio64[:, ch]
+        env_fast  = _rms_envelope(sig, 2.0,  sr)   # 2ms  — captures drum transients
+        env_slow  = _rms_envelope(sig, 80.0, sr)   # 80ms — captures synth sustain
+        # transient_component: positive where fast > slow (i.e. a sharp hit arrived)
+        transient_component = np.maximum(env_fast - env_slow, 0.0)
+        # Normalised suppression mask: scale to signal amplitude, then subtract
+        total_env = env_fast + 1e-9
+        suppress_mask = alpha * (transient_component / total_env)
+        suppress_mask = np.clip(suppress_mask, 0.0, 0.8)   # never mute more than 80%
+        audio64[:, ch] = sig * (1.0 - suppress_mask)
 
     # Presence boost +2 dB at 2–6 kHz (synth leads / arp clarity)
     sos_p_hp = butter(2, 2000.0 / nyq, "high", output="sos")
@@ -489,19 +528,20 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     """
     Vocals — dance/techno tuning:
     Techno vocals are SHORT SAMPLES, not sustained vocal performances.
-    Hard gate at -24 dBFS (not -30) with fast attack/release so samples
-    snap in and out cleanly without pumping. Tight frequency band.
-    1. HP 100 Hz (harder than 80 Hz — samples don't need the low body)
+    Hard gate at -20 dBFS (more aggressive than -24 dBFS) with fast 3ms/10ms attack/release
+    so samples snap cleanly. Tight frequency band — sub measured at 0.518 in T-1000 tests,
+    meaning the old 100 Hz HP was insufficient; 180 Hz eliminates the sub/bass contamination.
+    1. HP 180 Hz (techno vocal samples/stabs have no useful content below 180 Hz)
     2. LP 10 kHz (techno vocal samples rarely have useful content above)
     3. Presence +3 dB at 1.5–4 kHz (forward, cut through a loud mix)
-    4. Gate at −24 dBFS, 5ms attack / 15ms release — tight, no pumping
+    4. Gate at −20 dBFS, 3ms attack / 10ms release — more aggressive, tighter snap
     """
     from scipy.signal import sosfilt, butter, lfilter
     nyq = sr / 2
     audio64 = audio.astype(np.float64)
 
-    # 1. HP 100 Hz
-    sos_hp = butter(4, min(100.0 / nyq, 0.99), "high", output="sos")
+    # 1. HP 180 Hz — eliminates sub/bass contamination in techno vocal stabs
+    sos_hp = butter(4, min(180.0 / nyq, 0.99), "high", output="sos")
     audio64 = np.stack([sosfilt(sos_hp, audio64[:, 0]),
                         sosfilt(sos_hp, audio64[:, 1])], axis=1)
 
@@ -518,13 +558,13 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64[:, 0] += pres_L * (10.0 ** (3.0 / 20.0) - 1.0)
     audio64[:, 1] += pres_R * (10.0 ** (3.0 / 20.0) - 1.0)
 
-    # 4. Gate at −24 dBFS, fast attack/release for sample snap
-    gate_threshold = 10.0 ** (-24.0 / 20.0)
-    window = max(1, int(sr * 0.005))   # 5ms RMS window
+    # 4. Gate at −20 dBFS, 3ms attack / 10ms release — more aggressive for short stabs
+    gate_threshold = 10.0 ** (-20.0 / 20.0)
+    window = max(1, int(sr * 0.003))   # 3ms RMS window
     rms_env = np.sqrt(np.convolve(audio64[:, 0] ** 2,
                                   np.ones(window) / window, mode="same"))
-    atk = 1.0 - np.exp(-1.0 / max(sr * 0.005, 1.0))   # 5ms attack
-    rel = 1.0 - np.exp(-1.0 / max(sr * 0.015, 1.0))   # 15ms release
+    atk = 1.0 - np.exp(-1.0 / max(sr * 0.003, 1.0))   # 3ms attack
+    rel = 1.0 - np.exp(-1.0 / max(sr * 0.010, 1.0))   # 10ms release
     gate_raw = (rms_env > gate_threshold).astype(np.float64)
     # Asymmetric gate: fast attack, faster-than-old release
     gate = np.zeros_like(gate_raw)
@@ -590,13 +630,14 @@ def _split_other_to_guitar_piano(other: np.ndarray, sr: int
                                   ) -> tuple[np.ndarray, np.ndarray]:
     """
     DSP split of the 'other' stem into guitar-like and piano-like components.
-    Guitar/Lead:  brighter, more transient-heavy (HP 1500 Hz) — lead synths, stabs
-    Piano/Pad:    lower harmonic content  (LP 1500 Hz) — pads, chords, sub-textures
-    Crossover at 1500 Hz chosen for techno/dance (lead synths live above, pads below).
+    Guitar/Lead:  brighter, more transient-heavy (HP 2000 Hz) — lead synths, stabs
+    Piano/Pad:    lower harmonic content  (LP 2000 Hz) — pads, chords (200-2000 Hz range)
+    Crossover raised from 1500 Hz to 2000 Hz: techno pads/stabs live at 200-2000 Hz,
+    raising the crossover captures more pad content in the piano stem, increasing its level.
     """
     from scipy.signal import sosfilt, butter
     nyq = sr / 2
-    xover = min(1500.0 / nyq, 0.99)
+    xover = min(2000.0 / nyq, 0.99)
 
     sos_hp = butter(4, xover, "high", output="sos")
     sos_lp = butter(4, xover, "low",  output="sos")

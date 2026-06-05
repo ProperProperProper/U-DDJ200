@@ -31,26 +31,40 @@ import numpy as np
 # ── Load stems from cache or separate live ────────────────────────────────────
 
 def load_or_separate(track_path: str, sample_rate: int = 44100) -> tuple[dict, np.ndarray]:
-    """Load stems from cache, or run demucs separation if not cached."""
+    """Load stems from WAV cache, .npz cache, or run demucs if nothing cached."""
     import soundfile as sf
 
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     from udj.core.stems import (
         _cache_path, _load_cache, _separate_demucs, _save_cache,
-        _split_other_to_guitar_piano, _roformer_vocals
+        _split_other_to_guitar_piano,
     )
 
-    cache = _cache_path(track_path)
     stems = None
-    if cache.exists():
-        stems = _load_cache(cache, sample_rate)
-        if stems:
-            print(f"  Loaded from cache: {cache.name}")
 
+    # 1. Try WAV cache first (stem_analyzer — fastest)
+    try:
+        from stem_analyzer import load_cached_stems, is_cached
+        if is_cached(track_path):
+            stems = load_cached_stems(track_path, sample_rate)
+            if stems:
+                print(f"  Loaded from WAV cache")
+    except Exception as e:
+        print(f"  WAV cache unavailable: {e}")
+
+    # 2. Try .npz cache
     if stems is None:
-        print(f"  No cache — running demucs separation (shifts=4)...")
+        cache = _cache_path(track_path)
+        if cache.exists():
+            stems = _load_cache(cache, sample_rate)
+            if stems:
+                print(f"  Loaded from .npz cache: {cache.name}")
+
+    # 3. Run demucs
+    if stems is None:
+        print(f"  No cache — running demucs (shifts=4, takes a few minutes)...")
         stems = _separate_demucs(track_path, sample_rate, track_meta=None)
-        _save_cache(stems, cache)
+        _save_cache(stems, _cache_path(track_path))
 
     # Pop metadata flags
     stems.pop("_vocal_present", None)
