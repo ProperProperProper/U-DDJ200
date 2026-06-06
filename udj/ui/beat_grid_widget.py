@@ -270,13 +270,19 @@ class BeatGridWidget(QWidget):
 
 def _draw_tick(qp: QPainter, px: int, row_top: int, row_h: int,
                is_bar: bool, col: QColor):
+    """Serato-style edge ticks — never obscure the waveform."""
     if is_bar:
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 255), 2))
-        qp.drawLine(px, row_top, px, row_top + row_h)
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 50), 5))
-        qp.drawLine(px, row_top, px, row_top + row_h)
+        # Bar: tall edge marks (top + bottom), thin centre hairline
+        mark = row_h // 3
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 220), 2))
+        qp.drawLine(px, row_top,              px, row_top + mark)
+        qp.drawLine(px, row_top + row_h - mark, px, row_top + row_h)
+        # faint centre hairline so you can see bar boundary through the waveform
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 35), 1))
+        qp.drawLine(px, row_top + mark, px, row_top + row_h - mark)
     else:
-        tick_h = (row_h * 2) // 3
-        ty     = row_top + (row_h - tick_h) // 2
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 160), 1))
-        qp.drawLine(px, ty, px, ty + tick_h)
+        # Beat: small edge nubs only
+        nub = row_h // 6
+        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 110), 1))
+        qp.drawLine(px, row_top,                px, row_top + nub)
+        qp.drawLine(px, row_top + row_h - nub,  px, row_top + row_h)
