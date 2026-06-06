@@ -539,7 +539,7 @@ class StemInspectDialog(QDialog):
         self.setStyleSheet(
             "background:#0a0a14;color:#ccc;"
             "QTextEdit{background:#0e0e1c;border:1px solid #2a2a40;"
-            "color:#ccc;font-family:'Courier New';font-size:11px;border-radius:4px;}"
+            "color:#ccc;font-family:'Menlo';font-size:11px;border-radius:4px;}"
             "QPushButton{background:#1a1a2a;border:1px solid #3a3a55;color:#aaa;"
             "border-radius:4px;padding:4px 14px;font-size:11px;font-weight:bold;}"
             "QPushButton:hover{background:#2a2a3a;color:#fff;}"

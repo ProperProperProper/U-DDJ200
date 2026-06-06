@@ -121,7 +121,7 @@ class VolFader(QWidget):
         qp.fillRect(0, 0, W, H, QColor("#111111"))
 
         # ── dB scale (left of groove, labels right-aligned to groove) ──
-        qp.setFont(QFont("Courier New", 7))
+        qp.setFont(QFont("Menlo", 7))
         for db, show_lbl, col in _DB_SCALE:
             frac = _db_to_frac(db)
             ty   = M + int((1.0 - frac) * self._travel())
@@ -181,7 +181,7 @@ class VolFader(QWidget):
         # ── dB readout (top of widget) ─────────────────────────
         db_str = _gain_to_db(self.gain())
         qp.setPen(QPen(c, 1))
-        qp.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        qp.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
         qp.drawText(0, 4, W, 13, Qt.AlignmentFlag.AlignCenter,
                     f"{db_str} dB")
         qp.end()
@@ -398,7 +398,7 @@ class XFader(QWidget):
         else:
             txt, col = "CENTER", QColor("#666")
         qp.setPen(QPen(col, 1))
-        qp.setFont(QFont("Courier New", 8))
+        qp.setFont(QFont("Menlo", 8))
         qp.drawText(0, H - 14, W, 12, Qt.AlignmentFlag.AlignCenter, txt)
         qp.end()
 

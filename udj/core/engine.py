@@ -35,9 +35,15 @@ BUFFER_SIZE = 1024
 #   - one-shot bar-snap on play-start or significant master rate change
 #   - continuous position nudge (not rate tweak) to correct residual phase error
 #     Nudge is inaudible (<1ms), converges in <1 bar, doesn't fight rate lock.
-_PHASE_DEAD      = 0.002   # dead-zone: ~0.9ms at 130BPM — tight, above float noise only
-_PHASE_NUDGE_CAP = 0.03    # max nudge per callback: 3% of a beat (~14ms at 130bpm)
-_NUDGE_GAIN      = 0.6     # proportional gain — higher = faster convergence
+#
+# Studio-grade tuning vs previous:
+#   - Tighter dead zone (0.001 vs 0.002): ±0.46ms at 130BPM before correction
+#   - Higher gain (0.8 vs 0.6): converges in ~50ms instead of ~100ms
+#   - Larger cap (0.04 vs 0.03): faster recovery from snap errors without audible wobble
+#   - Phase measured via stored beat grid (sub-sample accurate) not uniform BPM math
+_PHASE_DEAD      = 0.001   # dead-zone: ~0.46ms at 130BPM
+_PHASE_NUDGE_CAP = 0.04    # max nudge per callback: 4% of beat (~18ms at 130bpm)
+_NUDGE_GAIN      = 0.8     # proportional gain
 _SNAP_RATE_THR   = 0.003   # re-snap when master rate changes > 0.3%
 
 
@@ -83,6 +89,45 @@ def bar_distance(position: float,
     return 0.0
 
 
+def _local_beat_len(deck: "Deck", sr: int) -> float:
+    """
+    Beat length at the deck's current position using the stored beat grid.
+
+    Interpolates between the two surrounding beat positions so BPM-drifting
+    recordings (live sets, warped files) are measured correctly.  Falls back to
+    uniform BPM arithmetic when no stored grid is available.
+    """
+    beats = deck.beats
+    if beats is not None and len(beats) >= 2:
+        pos = deck.position
+        idx = int(np.searchsorted(beats, pos, side="right")) - 1
+        idx = max(0, min(len(beats) - 2, idx))
+        local = float(beats[idx + 1] - beats[idx])
+        lo = sr * 60.0 / 300.0
+        hi = sr * 60.0 / 30.0
+        if lo < local < hi:
+            return local
+    return sr * 60.0 / max(deck.bpm, 1.0)
+
+
+def beat_distance_grid(position: float,
+                       beats: "np.ndarray | None",
+                       first_beat: float,
+                       beat_len: float) -> float:
+    """
+    Phase within the current beat (0.0…1.0) via stored beat grid.
+
+    More accurate than uniform-BPM arithmetic for tracks with BPM drift.
+    Falls back to beat_distance() when no grid is available.
+    """
+    if beats is not None and len(beats) >= 2:
+        idx = int(np.searchsorted(beats, position, side="right")) - 1
+        idx = max(0, min(len(beats) - 2, idx))
+        b0, b1 = float(beats[idx]), float(beats[idx + 1])
+        span = b1 - b0
+        if span > 0:
+            return float(np.clip((position - b0) / span, 0.0, 1.0))
+    return beat_distance(position, beats, first_beat, beat_len)
 
 
 def _snap_to_grid(master: "Deck", follower: "Deck", sr: int) -> float:
@@ -162,11 +207,14 @@ class AudioEngine:
         print(f"[Engine] started  sr={SAMPLE_RATE}  buf={BUFFER_SIZE}")
 
     def stop(self):
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
         self._running = False
+        if self._stream:
+            try:
+                self._stream.abort()   # immediate silence, don't wait for buffer drain
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
 
     # ── Mixxx-exact sync ──────────────────────────────────────
 
@@ -208,12 +256,15 @@ class AudioEngine:
         if master_eff_bpm <= 0:
             return
 
-        master_beat = sr * 60.0 / master_eff_bpm
-        master_bar  = master_beat * 4.0
-        m_bd        = beat_distance(master.position, master.beats,
-                                    master.first_beat, master_beat)
+        # Nominal beat length — used for rate-lock calculation only.
+        # Phase measurement uses local_beat_len (stored grid) for studio accuracy.
+        master_beat      = sr * 60.0 / master_eff_bpm
+        master_bar       = master_beat * 4.0
+        master_local_beat = _local_beat_len(master, sr)   # handles BPM drift
+        m_bd        = beat_distance_grid(master.position, master.beats,
+                                         master.first_beat, master_local_beat)
         m_bar_phase = bar_distance(master.position, master.beats,
-                                   master.first_beat, master_bar)
+                                   master.first_beat, master_local_beat)
 
         for f_idx, follower in enumerate(self.decks):
             if follower is master:
@@ -257,13 +308,11 @@ class AudioEngine:
                 continue
 
             # Continuous phase P-controller — position nudge, rate untouched.
-            # Fixes imperfect snaps and slow BPM-analysis drift without wobble.
-            # At 43 Hz with cap=0.01 beats, max correction = 0.43 beats/s.
-            # A 20 ms snap error at 130 BPM (≈ 0.043 beats) corrects in ~100 ms.
-            # Use follower's own beat length for phase measurement fallback
-            follower_beat = sr * 60.0 / max(follower.bpm, 1.0)
-            f_bd  = beat_distance(follower.position, follower.beats,
-                                  follower.first_beat, follower_beat)
+            # Uses stored beat grid for both master and follower phase so that
+            # BPM drift in either track doesn't accumulate into a phase error.
+            follower_beat = _local_beat_len(follower, sr)
+            f_bd  = beat_distance_grid(follower.position, follower.beats,
+                                       follower.first_beat, follower_beat)
             error = m_bd - f_bd
             if error >  0.5: error -= 1.0
             if error < -0.5: error += 1.0

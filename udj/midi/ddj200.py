@@ -423,77 +423,64 @@ class DDJ200:
                 return
 
         # ── Performance pads — mode-aware ─────────────────────
+        # DDJ-200 always sends pad notes 0x00-0x07 on PAD_N status (0x97/0x99).
+        # BL_BASE/SP_BASE are LED OUTPUT addresses only — never appear as input notes.
+        # Pad 8 = note 0x07, ALWAYS mode-cycle only, never passes to mode handlers.
+        # All mode handlers use note range 0x00-0x06 (pads 1-7).
         for d in range(2):
             mode = self._pad_mode[d]
 
-            # Shift+hot-cue pad = clear cue (works in any mode while shift held)
-            if status == PAD_S[d] and 0x00 <= note <= 0x07 and val:
+            # ── Pad 8 (note 0x07) = mode cycle, all modes, note-on only ─────
+            if status == PAD_N[d] and note == 0x07 and val:
+                cur = next((i for i, m in enumerate(self._PAD_MODES) if m == mode), 0)
+                new_mode = self._PAD_MODES[(cur + 1) % len(self._PAD_MODES)]
+                self._pad_mode[d] = new_mode
+                self._refresh_pad_leds(d)
+                if self.on_pad_mode_changed:
+                    self.on_pad_mode_changed(d, new_mode)
+                return
+
+            # ── Shift+pad = clear hot cue (pads 1-7 only) ────────────────────
+            if status == PAD_S[d] and 0x00 <= note <= 0x06 and val:
                 self.engine.deck(d).hotcue_clear(note)
                 self._send(PAD_N[d], note, LED_OFF)
                 return
 
-            # Pad mode cycle: Shift + pad-bank select buttons (BL_BASE pad 0)
-            # Use Shift + first pad of beat-loop bank to cycle modes
-            if status == PAD_N[d] and note == BL_BASE and self._shift[d] and val:
-                cur = next((i for i, m in enumerate(self._PAD_MODES) if m == mode), 0)
-                idx = (cur + 1) % len(self._PAD_MODES)
-                self._pad_mode[d] = self._PAD_MODES[idx]
-                print(f"[DDJ] deck {d} pad mode → {self._pad_mode[d]}")
-                self._refresh_pad_leds(d)
-                return
+            # ── Note-on: pads 1-7 (0x00-0x06) ───────────────────────────────
+            if status == PAD_N[d] and 0x00 <= note <= 0x06 and val:
 
-            if status == PAD_N[d] and val:
-                # ── STEMS software mode: full override of top+bottom rows ─────
                 if mode == "STEMS":
-                    # Top row (pads 1-4): stem mute toggles VOC/BASS/SYNTH/DRM
-                    top_idx = None
-                    if 0x00 <= note <= 0x03:            top_idx = note
-                    elif BL_BASE <= note <= BL_BASE+3:  top_idx = note - BL_BASE
-                    elif SP_BASE <= note <= SP_BASE+3:  top_idx = note - SP_BASE
-
-                    # Bottom row (pads 5-7): echo toggles / Shift = cycle FX type
-                    bot_idx = None
-                    if 0x04 <= note <= 0x06:                  bot_idx = note - 0x04
-                    elif BL_BASE+4 <= note <= BL_BASE+6:      bot_idx = note - BL_BASE - 4
-                    elif SP_BASE+4 <= note <= SP_BASE+6:      bot_idx = note - SP_BASE - 4
-
-                    _STEM_MAP = {0:"vocals",1:"bass",2:"drums",3:"other"}
-                    _FX_CYCLE = ["ECHO","DELAY","REVERB","FILTER"]
+                    _STEM_MAP = {0:"vocals", 1:"bass", 2:"drums", 3:"other"}
+                    _FX_CYCLE = ["ECHO", "DELAY", "REVERB", "FILTER"]
                     deck = self.engine.deck(d)
 
-                    if top_idx is not None:
-                        name = _STEM_MAP.get(top_idx)
-                        if name:
-                            if deck.stems_ready:
-                                deck.toggle_stem(name)
-                                # Use fade TARGET not active_stems — toggle_stem keeps
-                                # the stem in active_stems during the 10ms fade out,
-                                # so active_stems check would always return True right
-                                # after muting. Target=1.0 means unmuting, 0.0 = muting.
-                                target = deck._stem_fade_target.get(name, 1.0)
-                                vel = LED_OFF if target > 0.5 else LED_ON  # dark=playing, lit=muted
-                            else:
-                                vel = LED_OFF
-                            self._send(PAD_N[d], top_idx,            vel)
-                            self._send(PAD_N[d], BL_BASE + top_idx,  vel)
-                            self._send(PAD_N[d], SP_BASE + top_idx,  vel)
+                    if note <= 0x03:
+                        # Pads 1-4: stem mute toggles
+                        name = _STEM_MAP.get(note)
+                        if name and deck.stems_ready:
+                            deck.toggle_stem(name)
+                            target = deck._stem_fade_target.get(name, 1.0)
+                            vel = LED_OFF if target > 0.5 else LED_ON
+                            self._send(PAD_N[d], note,           vel)
+                            self._send(PAD_N[d], BL_BASE + note, vel)
+                            self._send(PAD_N[d], SP_BASE + note, vel)
                         if self.on_pad_mode_changed:
                             self.on_pad_mode_changed(d, mode)
                         return
 
-                    if bot_idx is not None:
+                    else:
+                        # Pads 5-7: echo toggles
+                        bot_idx = note - 0x04
                         if not hasattr(deck, '_echo_active'):
                             deck._echo_active  = [False, False, False]
                             deck._echo_fx_type = ["ECHO", "ECHO", "ECHO"]
                         if self._shift[d]:
-                            # Shift+pad = cycle FX type for this echo pad
-                            cur = next((i for i,f in enumerate(_FX_CYCLE)
+                            cur = next((i for i, f in enumerate(_FX_CYCLE)
                                         if f == deck._echo_fx_type[bot_idx]), 0)
-                            deck._echo_fx_type[bot_idx] = _FX_CYCLE[(cur+1)%len(_FX_CYCLE)]
+                            deck._echo_fx_type[bot_idx] = _FX_CYCLE[(cur + 1) % len(_FX_CYCLE)]
                             if deck._echo_active[bot_idx]:
                                 self.engine.mixer.set_fx_type(d, deck._echo_fx_type[bot_idx])
                         else:
-                            # Toggle echo — only one active at a time
                             was = deck._echo_active[bot_idx]
                             deck._echo_active = [False, False, False]
                             deck._echo_active[bot_idx] = not was
@@ -502,7 +489,6 @@ class DDJ200:
                                 self.engine.mixer.set_fx_raw(d, 100)
                             else:
                                 self.engine.mixer.set_fx_raw(d, 64)
-                            # Update echo LEDs across all 3 channel addresses
                             for i in range(3):
                                 vel = LED_ON if deck._echo_active[i] else LED_OFF
                                 self._send(PAD_N[d], 4 + i,           vel)
@@ -512,110 +498,49 @@ class DDJ200:
                             self.on_pad_mode_changed(d, mode)
                         return
 
-                # ── Pad 8 = mode cycle (all modes) ───────────────────────────
-                is_pad8 = (note == 0x07 or note == BL_BASE + 7 or note == SP_BASE + 7)
-                if is_pad8:
-                    # Safe index — default to 0 if mode no longer exists in list
-                    cur = next((i for i, m in enumerate(self._PAD_MODES) if m == mode), 0)
-                    idx = (cur + 1) % len(self._PAD_MODES)
-                    self._pad_mode[d] = self._PAD_MODES[idx]
-                    self._refresh_pad_leds(d)
-                    if self.on_pad_mode_changed:
-                        self.on_pad_mode_changed(d, self._PAD_MODES[idx])
+                if mode == "HOT CUE":
+                    deck = self.engine.deck(d)
+                    deck.hotcue_activate(note)
+                    is_set = deck.hot_cues[note] is not None
+                    self._send(PAD_N[d], note, LED_RED if is_set else LED_OFF)
                     return
 
-                # Bottom row pads 5-7 (notes 0x04-0x06) = stem toggles.
-                # Pad 8 (0x07) is the mode cycler above — excluded here.
-                bottom_note = None
-                bottom_idx  = None
-                if 0x04 <= note <= 0x06:
-                    bottom_note = note; bottom_idx = note - 0x04
-                elif BL_BASE + 4 <= note <= BL_BASE + 6:
-                    bottom_note = note; bottom_idx = note - BL_BASE - 4
-                elif SP_BASE + 4 <= note <= SP_BASE + 6:
-                    bottom_note = note; bottom_idx = note - SP_BASE - 4
-
-                if bottom_idx is not None:
-                    # Stem toggle (pads 5-7 = VOC, DRM, BSS)
-                    if bottom_idx < len(STEM_NAMES):
-                        deck = self.engine.deck(d)
-                        name = STEM_NAMES[bottom_idx]
-                        if deck.stems_ready:
-                            deck.toggle_stem(name)
-                            active = name in deck.active_stems
-                            vel = LED_ON if active else LED_OFF
-                            self._send(PAD_N[d], 4 + bottom_idx,           vel)
-                            self._send(PAD_N[d], BL_BASE + 4 + bottom_idx, vel)
-                            self._send(PAD_N[d], SP_BASE + 4 + bottom_idx, vel)
-                    return
-
-                if mode == "HOT CUE" and 0x00 <= note <= 0x07:
-                    self.engine.deck(d).hotcue_activate(note)
-                    enabled = self.engine.deck(d).hot_cues[note] is not None
-                    self._send(PAD_N[d], note, LED_RED if enabled else LED_OFF)
-                    return
-
-                if mode == "BEAT LOOP" and BL_BASE <= note <= BL_BASE + 7:
-                    idx = note - BL_BASE
+                if mode == "BEAT LOOP":
                     deck = self.engine.deck(d)
                     if self._shift[d] and deck.loop_active:
-                        # Shift + lower half pads = halve; Shift + upper half = double
-                        if idx < 4:
+                        if note < 4:
                             self._loop_halve(d)
                         else:
                             self._loop_double(d)
-                    elif idx < len(BEAT_LOOP_SIZES):
-                        deck.beatloop_toggle(BEAT_LOOP_SIZES[idx])
-                        lit = deck.loop_active
-                        self._send(PAD_N[d], note, LED_ON if lit else LED_OFF)
+                    elif note < len(BEAT_LOOP_SIZES):
+                        deck.beatloop_toggle(BEAT_LOOP_SIZES[note])
+                    for i in range(7):
+                        sz  = BEAT_LOOP_SIZES[i] if i < len(BEAT_LOOP_SIZES) else None
+                        lit = (sz is not None and deck.loop_active
+                               and abs(deck._current_loop_beats - sz) < 0.001)
+                        self._send(PAD_N[d], BL_BASE + i, LED_ON if lit else LED_OFF)
                     return
 
-                if mode == "STEMS":
-                    if SP_BASE <= note <= SP_BASE + 3:
-                        # Pads 0-3: toggle stem
-                        idx  = note - SP_BASE
-                        name = STEM_NAMES[idx]
-                        deck = self.engine.deck(d)
-                        if deck.stems_ready:
-                            deck.toggle_stem(name)
-                            active = name in deck.active_stems
-                            self._send(PAD_N[d], note, LED_ON if active else LED_OFF)
-                        return
-                    if SP_BASE + 4 <= note <= SP_BASE + 7:
-                        # Pads 4-7: hold to solo (mute all others)
-                        idx  = note - SP_BASE - 4
-                        name = STEM_NAMES[idx]
-                        deck = self.engine.deck(d)
-                        if deck.stems_ready:
-                            deck._solo_stem = name
-                            for s in STEM_NAMES:
-                                deck.stem_volumes[s] = 1.0 if s == name else 0.0
-                            self._send(PAD_N[d], note, LED_ON)
-                        return
-
-                if mode == "BEAT JUMP" and SP_BASE <= note <= SP_BASE + 7:
-                    idx = note - SP_BASE
-                    if idx < len(BEAT_JUMP_BARS):
-                        self.engine.deck(d).beat_jump(BEAT_JUMP_BARS[idx])
-                    return
-
-                if mode == "PAD FX" and SP_BASE <= note <= SP_BASE + 7:
-                    idx = note - SP_BASE
-                    self._pfx_held[d][idx] = True
-                    self._apply_pad_fx(d, idx, True)
+                if mode == "BEAT JUMP":
+                    if note < len(BEAT_JUMP_BARS):
+                        self.engine.deck(d).beat_jump(BEAT_JUMP_BARS[note])
                     self._send(PAD_N[d], note, LED_ON)
                     return
 
-            # Note-off for pad FX gate and stem solo release
-            if status == PAD_N[d] and not val:
-                if mode == "PAD FX" and SP_BASE <= note <= SP_BASE + 7:
-                    idx = note - SP_BASE
-                    self._pfx_held[d][idx] = False
-                    self._apply_pad_fx(d, idx, False)
+                if mode == "PAD FX":
+                    self._pfx_held[d][note] = True
+                    self._apply_pad_fx(d, note, True)
+                    self._send(PAD_N[d], note, LED_ON)
+                    return
+
+            # ── Note-off: pads 1-7 ────────────────────────────────────────────
+            if status == PAD_N[d] and 0x00 <= note <= 0x06 and not val:
+                if mode == "PAD FX":
+                    self._pfx_held[d][note] = False
+                    self._apply_pad_fx(d, note, False)
                     self._send(PAD_N[d], note, LED_OFF)
                     return
-                if mode == "STEMS" and SP_BASE + 4 <= note <= SP_BASE + 7:
-                    # Release stem solo
+                if mode == "STEMS" and 0x04 <= note <= 0x06:
                     deck = self.engine.deck(d)
                     deck._solo_stem = None
                     for s in STEM_NAMES:
@@ -715,20 +640,23 @@ class DDJ200:
             self.engine.mixer.set_fx_raw(d, 64)   # centre = bypass
 
     def _refresh_pad_leds(self, d: int):
-        """Light pads according to current mode after a mode change."""
+        """Light pads 1-7 according to current mode. Pad 8 always dark (mode-cycle only)."""
         mode = self._pad_mode[d]
+        # Clear all pads including pad 8
         for i in range(8):
             self._send(PAD_N[d], i,            LED_OFF)
             self._send(PAD_N[d], BL_BASE + i,  LED_OFF)
             self._send(PAD_N[d], SP_BASE + i,  LED_OFF)
         if mode == "HOT CUE":
-            for i in range(8):
+            for i in range(7):   # pads 1-7 only
                 lit = self.engine.deck(d).hot_cues[i] is not None
                 self._send(PAD_N[d], i, LED_RED if lit else LED_OFF)
         elif mode == "BEAT LOOP":
             deck = self.engine.deck(d)
-            for i, sz in enumerate(BEAT_LOOP_SIZES):
-                lit = deck.loop_active and abs(deck._current_loop_beats - sz) < 0.01
+            for i in range(7):   # pads 1-7 only
+                sz  = BEAT_LOOP_SIZES[i] if i < len(BEAT_LOOP_SIZES) else None
+                lit = (sz is not None and deck.loop_active
+                       and abs(deck._current_loop_beats - sz) < 0.001)
                 self._send(PAD_N[d], BL_BASE + i, LED_ON if lit else LED_OFF)
         elif mode == "STEMS":
             deck = self.engine.deck(d)

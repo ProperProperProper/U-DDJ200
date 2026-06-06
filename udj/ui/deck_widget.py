@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QSizePolicy)
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 from ..core.deck import Deck, STEM_NAMES
@@ -25,6 +25,8 @@ def _main_thread(func):
 
 
 class DeckWidget(QWidget):
+    _sig_pad_mode = pyqtSignal(str)   # emitted from any thread, connected to _set_pad_mode
+
     AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif",
                   ".ogg", ".m4a", ".opus"}
 
@@ -124,7 +126,7 @@ class DeckWidget(QWidget):
         bpm_col.setSpacing(0)
         self.lbl_bpm = QLabel("---.--")
         self.lbl_bpm.setStyleSheet(
-            "color:#ff9900;font-family:'Courier New';"
+            "color:#ff9900;font-family:'Menlo';"
             "font-size:36px;font-weight:bold;")
         self.lbl_bpm_unit = QLabel("BPM")
         self.lbl_bpm_unit.setStyleSheet(
@@ -139,7 +141,7 @@ class DeckWidget(QWidget):
         self.lbl_time_icon.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.lbl_time = QLabel("-0:00.00")
         self.lbl_time.setStyleSheet(
-            "color:#eeeeee;font-family:'Courier New';"
+            "color:#eeeeee;font-family:'Menlo';"
             "font-size:42px;font-weight:bold;")
         time_col.addWidget(self.lbl_time_icon)
         time_col.addWidget(self.lbl_time)
@@ -161,7 +163,7 @@ class DeckWidget(QWidget):
         # ── Rate ──────────────────────────────────────────────
         self.lbl_rate = QLabel("+0.00%")
         self.lbl_rate.setStyleSheet(
-            "color:#1a5577;font-family:'Courier New';"
+            "color:#1a5577;font-family:'Menlo';"
             "font-size:13px;font-weight:bold;")
         root.addWidget(self.lbl_rate)
 
@@ -200,31 +202,13 @@ class DeckWidget(QWidget):
         self.badge_stems.setVisible(False)
 
 
-        self._norm_btn = QPushButton("NORM")
-        self._norm_btn.setCheckable(True)
-        self._norm_btn.setChecked(False)
-        self._norm_btn.setFixedHeight(20)
-        self._norm_btn.setVisible(False)
-        self._norm_btn.setStyleSheet(
-            "QPushButton{color:#888;background:#111;border:1px solid #333;"
-            "border-radius:3px;padding:0 6px;font-size:8px;font-weight:bold;}"
-            "QPushButton:checked{color:#00ffaa;background:#003322;"
-            "border:1px solid #00aa66;}"
-        )
-        self._norm_btn.toggled.connect(self._on_norm_toggle)
-
         badges.addWidget(self.badge_master)
         badges.addWidget(self.badge_follower)
         badges.addWidget(self.badge_loop)
         badges.addWidget(self.badge_loop_arm)
         badges.addWidget(self.badge_stems)
         badges.addStretch()
-        badges.addWidget(self._norm_btn)
         root.addLayout(badges)
-
-        # ── Overview waveform ─────────────────────────────────
-        self._overview = WaveformWidget(accent=self._accent, parent=self)
-        root.addWidget(self._overview)
 
         # Stem buttons removed — stems controlled via mixer knobs
         self._stem_btns: dict[str, QPushButton] = {}
@@ -284,6 +268,7 @@ class DeckWidget(QWidget):
             self._mode_btns[mode] = b
         mode_row.addStretch()
         pads_outer.addLayout(mode_row)
+        self._sig_pad_mode.connect(self._set_pad_mode)
 
         # 7 pads: row 0 = pads 0-3, row 1 = pads 4-6 (pad 7 hidden)
         for row_i in range(2):
@@ -328,23 +313,11 @@ class DeckWidget(QWidget):
         self.lbl_bpm.setText(f"{d.bpm:.2f}" if d.bpm else "---.--")
         self._update_key_display()
         self._refresh_pads()
-        self._norm_btn.setChecked(False)
-        self._norm_btn.setVisible(False)
-        self._update_norm_btn()
         for btn in self._stem_btns.values():
             btn.setVisible(False)
             btn.setChecked(True)
         if self.deck.audio is not None and not self.deck.stems_ready:
             self.badge_stems.setVisible(True)
-        # Feed overview waveform
-        self._overview.set_waveform(d.waveform)
-        self._overview.set_duration(d.duration)
-        phrases = d.phrases
-        if phrases is not None and d.duration > 0:
-            self._overview.set_phrases(
-                [float(p) / (d.sample_rate * d.duration) for p in phrases])
-        else:
-            self._overview.set_phrases([])
 
     def _on_phrase_sync(self):
         engine = getattr(self, '_engine', None)
@@ -366,6 +339,7 @@ class DeckWidget(QWidget):
         cur = next((i for i, m in enumerate(modes) if m == self._pad_mode), 0)
         self._set_pad_mode(modes[(cur + 1) % len(modes)])
 
+    @pyqtSlot(str)
     def _set_pad_mode(self, mode: str):
         self._pad_mode = mode
         for m, b in self._mode_btns.items():
@@ -589,19 +563,6 @@ class DeckWidget(QWidget):
                 "QPushButton:pressed{background:#1a1a2a;}")
         self.lbl_key.setText(key_str)
 
-    def _on_norm_toggle(self, on: bool):
-        self.deck.gain_enabled = on
-
-    def _update_norm_btn(self):
-        g = self.deck.gain_linear
-        if g == 1.0:
-            self._norm_btn.setVisible(False)
-            return
-        import math
-        db = round(20.0 * math.log10(g), 1)
-        self._norm_btn.setText(f"NORM {db:+.1f}dB")
-        self._norm_btn.setVisible(True)
-
     def _toggle_stem(self, name: str):
         self.deck.toggle_stem(name)
 
@@ -624,17 +585,11 @@ class DeckWidget(QWidget):
         if self._pad_mode in ("BEAT LOOP", "STEMS", "PAD FX"):
             self._refresh_pads()
 
-        # Overview position
-        if d.audio is not None and d.duration > 0:
-            self._overview.set_position(
-                (d.position / d.sample_rate) / d.duration)
-
         # CLIP indicator
         if self._vu_peak_fn:
             peak = self._vu_peak_fn()
             if peak >= 1.0:
                 self._clip_lbl.setVisible(True)
-        self._update_norm_btn()
 
     # ── Drag & Drop ───────────────────────────────────────────
 

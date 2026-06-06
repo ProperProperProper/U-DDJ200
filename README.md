@@ -1,6 +1,6 @@
 # U-DJ
 
-Professional DJ app for macOS. Built for **Detroit techno, house, trance and dance music**. Pioneer DDJ-200 controller. AI stem separation. Rekordbox-style beat sync.
+Professional DJ app for macOS. Built for **Detroit techno, house, trance and dance music**. Pioneer DDJ-200 controller. AI stem separation. Studio-grade beat sync with transient quantization.
 
 <img width="1467" height="830" alt="U-DJ Screenshot" src="https://github.com/user-attachments/assets/6014058a-73c6-4ea5-8669-2a57d2bf9b49" />
 
@@ -109,8 +109,8 @@ Stems must show **● STEMS READY** in the mixer before pads are active. Shows *
 
 | Action | Result |
 |--------|--------|
-| Pad (empty) | Set cue at current position (beat-snapped) |
-| Pad (set, lit) | Jump to cue and play |
+| Pad (empty) | Set cue at current position (beat-snapped, 40% window) |
+| Pad (set, lit) | Jump to cue with 30ms pre-roll crossfade |
 | Right-click pad | Delete cue |
 
 Up to 8 auto cue points (INTRO / DROP / BUILD / BREAK / OUTRO) loaded automatically.
@@ -125,6 +125,8 @@ Pads left→right: `1/4  1/2  1  2  4  8  16` bars
 |--------|--------|
 | Pad | Activate loop at that size (lit = active) |
 | Same pad | Exit loop |
+
+Loop IN is snapped to the nearest beat/phrase boundary. Loop OUT is snapped to the stored beat grid (sample-accurate end alignment).
 
 Manual loop: **Shift + SYNC** → set loop IN, **SYNC** → set loop OUT.
 
@@ -158,9 +160,29 @@ Post-separation: **Wiener soft-mask refinement** (STFT 4096/hop 1024) sharpens T
 
 ---
 
+## Quantize & Beat Grid
+
+U-DJ uses a **40% quantize window** (rekordbox/Serato standard). When you trigger a cue, hot cue, or loop:
+
+- The hit is snapped to the nearest beat **only if it lands within ±40%** of a beat interval. Hits in the 40–50% zone (near the middle of two beats) stay where they are — forced snapping that far would sound unnatural.
+- Playback extends **30ms before** the target point. The outgoing audio fades out over the same 30ms window while the incoming audio fades in — a smooth overlap instead of a hard cut.
+- If an active loop's out-point falls inside that 30ms pre-roll window, it is **trimmed** back to leave at most 1ms of overlap.
+- **Beat loop out-points** are snapped to the stored beat grid (not nominal BPM math), giving sample-accurate loop lengths regardless of BPM drift.
+- Pressing **PLAY** on a paused deck snaps position to the nearest beat (same 40% window).
+
+---
+
 ## Sync
 
-Press **SYNC** on the incoming deck → it locks to the playing deck (follower) and snaps bar phase immediately. Continuous phase nudge corrects drift. The beat grid strip at top shows both decks — when bar markers align, you're locked.
+Press **SYNC** on the incoming deck → it locks to the playing deck (follower) and snaps bar phase immediately.
+
+**Studio-grade phase engine:**
+- Phase is measured against the stored beat grid (actual inter-beat intervals), not uniform BPM arithmetic — eliminates phantom drift on tracks with natural BPM variation.
+- Dead zone: ±0.46ms at 130 BPM. Errors inside this window are ignored to avoid micro-jitter.
+- Convergence: phase errors correct in ~50ms (P-gain 0.8, cap 4% per beat).
+- Rate lock is hard nominal (zero tempo wobble); only position is nudged for phase correction.
+
+The beat grid strip at top shows both decks — when bar markers align, you're locked.
 
 ---
 

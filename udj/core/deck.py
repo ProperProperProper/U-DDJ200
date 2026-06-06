@@ -18,7 +18,12 @@ BEAT_LOOP_SIZES = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 STEM_NAMES      = ["drums", "bass", "other", "vocals"]
 _LOOP_XFADE     = 64   # samples crossfade at loop boundary
 
-WAVEFORM_HOP    = 200  # samples per waveform frame (~4.5 ms at 44100 Hz)
+# Quantize / pre-roll constants
+_QUANTIZE_WINDOW  = 0.40   # snap only if transient is within 40% of a beat
+_PREROLL_SEC      = 0.030  # 30ms pre-roll overlap at cue/loop triggers
+_OVERLAP_TRIM_SEC = 0.001  # trim prior region only if overlap > 1ms
+
+WAVEFORM_HOP    = 128  # samples per waveform frame (~2.9 ms at 44100 Hz)
 _WF_FFT         = 256  # FFT size for spectral analysis
 _WF_CHUNK       = 2048 # frames per processing chunk (keeps memory low)
 
@@ -118,6 +123,11 @@ class Deck:
         self._stem_fade_target: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
 
         self.key_shift: int = 0   # semitones ±12; applied as playback rate multiplier
+
+        # Pre-roll crossfade state — set by _trigger_with_preroll, consumed by read()
+        self._xfade_src_pos: float = 0.0   # old playback position to blend from
+        self._xfade_len:     int   = 0     # crossfade duration in samples
+        self._xfade_done:    int   = 0     # samples completed so far
 
         self.waveform: Optional[np.ndarray] = None  # (N, 3) float32 lo/mid/hi
 
@@ -233,6 +243,11 @@ class Deck:
     # ── Transport ─────────────────────────────────────────────
 
     def play_pause(self):
+        if not self.playing:
+            # Snap to grid on play-start (within 40% window)
+            snapped = self._q(self.position, "play-start")
+            if snapped != int(self.position):
+                self.position = float(snapped)
         self.playing = not self.playing
         pos_sec = self.position / max(self.sample_rate, 1)
         print(f"[DECK{self.deck_id+1}] {'▶ PLAY' if self.playing else '⏸ PAUSE'}"
@@ -253,16 +268,54 @@ class Deck:
             self.on_play_state_changed(self.deck_id, False)
 
     def _q(self, pos: float, event_label: str = "quantize") -> int:
-        """Return pos snapped to nearest beat when quantize is on."""
+        """Snap pos to nearest beat when quantize is on and within ±40% window."""
         if self.quantize and self.bpm > 0:
             snapped = self._nearest_beat(pos)
-            event_log.log_quantize(
-                self.deck_id, event_label,
-                pos / self.sample_rate,
-                snapped / self.sample_rate,
-                self.bpm)
-            return snapped
+            beat_len = self.sample_rate * 60.0 / self.bpm
+            # Only snap if the transient is within the 40% window of a beat.
+            # Transients in the 40–50% zone (near the middle of a beat) are
+            # left in place — moving them that far would sound unnatural.
+            if abs(snapped - pos) <= beat_len * _QUANTIZE_WINDOW:
+                event_log.log_quantize(
+                    self.deck_id, event_label,
+                    pos / self.sample_rate,
+                    snapped / self.sample_rate,
+                    self.bpm)
+                return snapped
         return int(pos)
+
+    def _trigger_with_preroll(self, new_pos: int) -> int:
+        """
+        Set up a 30ms pre-roll crossfade and return the actual start position.
+
+        The returned position is 30ms before new_pos so the listener hears the
+        audio leading into the cue point.  The outgoing audio (from wherever the
+        deck was playing) is simultaneously faded out over the same 30ms window,
+        giving a smooth overlap instead of a hard cut.
+
+        If an active loop-out falls inside the overlap region (> 1ms from the
+        pre-roll start), it is trimmed back to leave at most 1ms of overlap —
+        preventing the loop from doubling audio with the incoming cue.
+        """
+        preroll   = int(self.sample_rate * _PREROLL_SEC)
+        trim_min  = int(self.sample_rate * _OVERLAP_TRIM_SEC)
+
+        self._xfade_src_pos = self.position   # fade OUT from here
+        self._xfade_len     = preroll
+        self._xfade_done    = 0
+
+        # Extend start backward by 30ms
+        actual_start = max(0.0, float(new_pos) - preroll)
+
+        # Trim prior loop if it would overlap the incoming audio by > 1ms
+        if (self.loop_active and
+                self.loop_out is not None and self.loop_in is not None and
+                self.loop_out > actual_start + trim_min):
+            self.loop_out = int(actual_start + trim_min)
+            if self.loop_out <= self.loop_in:
+                self.loop_active = False
+
+        return int(actual_start)
 
     def cue_default(self, pressed: bool):
         if pressed:
@@ -270,7 +323,7 @@ class Deck:
                 if self.cue_point < 0:
                     self.cue_point = self._q(self.position)
                 else:
-                    self.position = float(self.cue_point)
+                    self.position = float(self._trigger_with_preroll(self.cue_point))
                     self.playing  = True
             else:
                 if self.cue_point >= 0:
@@ -280,7 +333,7 @@ class Deck:
     def cue_stutter_start(self):
         """rekordbox CDJ cue hold: jump to cue and play while held."""
         if self.cue_point >= 0:
-            self.position = float(self.cue_point)
+            self.position = float(self._trigger_with_preroll(self.cue_point))
         self.playing = True
         if self.on_play_state_changed:
             self.on_play_state_changed(self.deck_id, True)
@@ -300,7 +353,7 @@ class Deck:
 
     def cue_gotoandplay(self):
         if self.cue_point >= 0:
-            self.position = float(self.cue_point)
+            self.position = float(self._trigger_with_preroll(self.cue_point))
         self.playing = True
 
     # ── Hot cues ──────────────────────────────────────────────
@@ -311,7 +364,7 @@ class Deck:
             if self.on_hot_cue_changed:
                 self.on_hot_cue_changed(self.deck_id, n, True)
         else:
-            self.position = float(self.hot_cues[n])
+            self.position = float(self._trigger_with_preroll(self.hot_cues[n]))
             if not self.playing:
                 self.playing = True
 
@@ -403,20 +456,30 @@ class Deck:
         self.position = float(max(0.0, min(total - 2, new_pos)))
 
     def beatloop_toggle(self, beats: float):
-        if self.loop_active and self._current_loop_beats == beats:
-            self.loop_active = False
+        # Compute snap outside the lock (numpy ops, no shared-state writes)
+        samps = (int((60.0 / self.bpm) * beats * self.sample_rate)
+                 if self.bpm > 0 else int(2.0 * self.sample_rate))
+        snap = self._nearest_phrase(self.position, snap_beats=1.5)
+        if snap is None:
+            snap = self._nearest_beat(self.position)
+
+        # Snap loop_out to stored beat grid for sample-accurate end alignment.
+        # Nominal BPM arithmetic accumulates floating-point error over long loops;
+        # using the stored grid gives the exact beat position at that bar boundary.
+        raw_out = snap + samps
+        if self.beats is not None and len(self.beats) >= 2:
+            loop_out = self._nearest_beat(float(raw_out))
         else:
-            samps = (int((60.0 / self.bpm) * beats * self.sample_rate)
-                     if self.bpm > 0 else int(2.0 * self.sample_rate))
-            # Smart quantize: prefer phrase boundary if close (djay-style),
-            # otherwise snap to nearest beat
-            snap = self._nearest_phrase(self.position, snap_beats=1.5)
-            if snap is None:
-                snap = self._nearest_beat(self.position)
-            self.loop_in             = snap
-            self.loop_out            = self.loop_in + samps
-            self._current_loop_beats = beats
-            self.loop_active         = True
+            loop_out = raw_out
+
+        with self._lock:
+            if self.loop_active and abs(self._current_loop_beats - beats) < 0.001:
+                self.loop_active = False
+            else:
+                self.loop_in             = snap
+                self.loop_out            = loop_out
+                self._current_loop_beats = beats
+                self.loop_active         = True
 
     def beat_quantize_loop_start(self):
         """Shift+Sync: arm loop — snaps to nearest phrase boundary, then bar, then beat."""
@@ -615,6 +678,40 @@ class Deck:
                 out = _hermite(audio)
 
             out[~valid] = 0.0
+
+            # Pre-roll crossfade — blend outgoing audio into the new cue start.
+            # Runs for _PREROLL_SEC (30ms) after any cue/hotcue/loop trigger.
+            # Uses _hermite on the full audio for the fade-out side so that the
+            # blend works regardless of whether stems are active on the new side.
+            if self._xfade_done < self._xfade_len and self._xfade_len > 0:
+                n_blend = min(frames, self._xfade_len - self._xfade_done)
+                t0 = self._xfade_done / self._xfade_len
+                t1 = (self._xfade_done + n_blend) / self._xfade_len
+                fade_in  = np.linspace(t0,       t1,       n_blend, dtype=np.float32)
+                fade_out = np.linspace(1.0 - t0, 1.0 - t1, n_blend, dtype=np.float32)
+
+                src = self._xfade_src_pos + np.arange(n_blend, dtype=np.float64) * rate
+                src = np.clip(src, 0.0, total - 2.001)
+                sq1 = src.astype(np.int64)
+                sq0 = np.maximum(sq1 - 1, 0)
+                sq2 = np.minimum(sq1 + 1, total - 1)
+                sq3 = np.minimum(sq1 + 2, total - 1)
+                st  = (src - sq1).astype(np.float32)
+                st2 = st * st; st3 = st2 * st
+                old_ch = np.empty((n_blend, 2), dtype=np.float32)
+                for ch in range(2):
+                    y0 = audio[sq0, ch]; y1 = audio[sq1, ch]
+                    y2 = audio[sq2, ch]; y3 = audio[sq3, ch]
+                    old_ch[:, ch] = 0.5 * (
+                        (-y0 + 3*y1 - 3*y2 + y3) * st3 +
+                        (2*y0 - 5*y1 + 4*y2 - y3) * st2 +
+                        (-y0 + y2) * st + 2*y1)
+
+                out[:n_blend] = (out[:n_blend]    * fade_in[:, np.newaxis] +
+                                 old_ch[:n_blend] * fade_out[:, np.newaxis])
+
+                self._xfade_src_pos += float(n_blend) * rate
+                self._xfade_done    += n_blend
 
             # Crossfade the loop restart boundary to eliminate clicks.
             # Blend the first _LOOP_XFADE samples after a wrap with the

@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
         # Sync pad mode display when hardware cycles modes
         _deck_widgets = [self.deck1_widget, self.deck2_widget]
         self.controller.on_pad_mode_changed = (
-            lambda d, m: _deck_widgets[d]._set_pad_mode(m))
+            lambda d, m: _deck_widgets[d]._sig_pad_mode.emit(m))
 
     # ──────────────────────────────────────────────────────────
     #  Track loading

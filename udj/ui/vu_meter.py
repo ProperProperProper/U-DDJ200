@@ -183,7 +183,7 @@ class VUMeter(QWidget):
         # label
         if self._label:
             qp.setPen(QPen(QColor("#555"), 1))
-            qp.setFont(QFont("Courier New", 7))
+            qp.setFont(QFont("Menlo", 7))
             qp.drawText(0, H - label_h, W, label_h,
                         Qt.AlignmentFlag.AlignCenter, self._label)
         qp.end()
@@ -236,7 +236,7 @@ class VUMeter(QWidget):
                 qp.fillRect(cx, y + 1, cw, dot_h, pk_col)
 
     def _draw_scale(self, qp, sx, top_y, sw, meter_h, seg_h):
-        qp.setFont(QFont("Courier New", 7))
+        qp.setFont(QFont("Menlo", 7))
         for db, lbl in _SCALE_MARKS.items():
             frac = _db_to_seg(float(db))
             i    = min(int(frac), _N - 1)
