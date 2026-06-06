@@ -117,8 +117,6 @@ class BeatGridWidget(QWidget):
         qp.fillRect(0, 0, W, H, _BG)
         qp.setPen(QPen(_SEP, 1))
         qp.drawLine(0, mid, W, mid)
-        qp.setPen(QPen(_NOW, 1))
-        qp.drawLine(cx, 0, cx, H)
 
         now       = time.perf_counter()
         decks_meta = [
@@ -153,10 +151,19 @@ class BeatGridWidget(QWidget):
             px_per_beat  = W / _WINDOW_BEATS
             half_w_samp  = (W / 2) * beat_len / px_per_beat
 
-            vis_lo = pos - half_w_samp
-            vis_hi = pos + half_w_samp
+            # Float the playhead left when near the start of the track so the
+            # display never shows empty space to the left of sample 0.
+            ph_x = cx
+            if pos < half_w_samp:
+                ph_x = int(pos / beat_len * px_per_beat)
+
+            vis_lo = pos - ph_x * beat_len / px_per_beat
+            vis_hi = pos + (W - ph_x) * beat_len / px_per_beat
             dbo    = int(getattr(deck, 'downbeat_offset', 0) or 0)
             beats  = deck.beats
+
+            def _beat_px(samp_pos):
+                return int(ph_x + (samp_pos - pos) / beat_len * px_per_beat)
 
             def _draw_beats():
                 if beats is not None and len(beats) >= 2:
@@ -165,7 +172,7 @@ class BeatGridWidget(QWidget):
                         bp = beats[j]
                         if bp > vis_hi:
                             break
-                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        px = _beat_px(bp)
                         if 0 <= px < W:
                             _draw_tick(qp, px, row_top, row_h, (j + dbo) % 4 == 0, col)
                 else:
@@ -175,18 +182,18 @@ class BeatGridWidget(QWidget):
                         bp = first_beat + i * beat_len
                         if bp > vis_hi:
                             break
-                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        px = _beat_px(bp)
                         if 0 <= px < W:
                             _draw_tick(qp, px, row_top, row_h, (i + dbo) % 4 == 0, col)
 
-            # ── 1. Beat grid (behind waveform so waveform renders over beats) ─
+            # ── 1. Beat grid (behind waveform) ───────────────────────────────
             _draw_beats()
 
             # ── 2. Waveform ──────────────────────────────────────────────────
             wf = deck.waveform
             if wf is not None and len(wf) > 1:
                 self._paint_waveform(qp, d_idx, wf, pos, beat_len,
-                                     px_per_beat, cx, W, row_top, row_h)
+                                     px_per_beat, ph_x, W, row_top, row_h)
 
             # ── 3. Bar + phrase markers on top of waveform ───────────────────
             if beats is not None and len(beats) >= 2:
@@ -196,24 +203,28 @@ class BeatGridWidget(QWidget):
                     if bp > vis_hi:
                         break
                     if (j + dbo) % 4 == 0:
-                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        px = _beat_px(bp)
                         if 0 <= px < W:
                             qp.setPen(_BEAT_BAR_PEN)
                             qp.drawLine(px, row_top, px, row_top + row_h)
 
-            # Phrase markers — amber, drawn last so always on top
+            # Phrase markers — amber, drawn last
             phrases = deck.phrases
             if phrases is not None and len(phrases) > 0:
                 i0 = max(0, int(np.searchsorted(phrases, vis_lo)) - 1)
                 for pp in phrases[i0:]:
                     if pp > vis_hi:
                         break
-                    px = int(cx + (pp - pos) / beat_len * px_per_beat)
+                    px = _beat_px(pp)
                     if 0 <= px < W:
                         qp.setPen(_PHRASE_PEN_GLOW)
                         qp.drawLine(px, row_top, px, row_top + row_h)
                         qp.setPen(_PHRASE_PEN)
                         qp.drawLine(px, row_top, px, row_top + row_h)
+
+            # ── Playhead (per-deck, floats left near track start) ────────────
+            qp.setPen(QPen(_NOW, 1))
+            qp.drawLine(ph_x, row_top, ph_x, row_top + row_h)
 
             # ── 4. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master
@@ -231,7 +242,8 @@ class BeatGridWidget(QWidget):
     # ─────────────────────────────────────────────────────────────
 
     def _paint_waveform(self, qp, d_idx, wf, pos, beat_len,
-                        px_per_beat, cx, W, row_top, row_h):
+                        px_per_beat, ph_x, W, row_top, row_h):
+        cx = ph_x
         # Reallocate only when geometry changes
         if self._wf_buf[d_idx] is None or self._wf_w[d_idx] != W or self._wf_h[d_idx] != row_h:
             self._wf_buf[d_idx]   = np.zeros((row_h, W, 4), dtype=np.uint8)
