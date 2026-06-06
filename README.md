@@ -26,13 +26,13 @@ Professional DJ app for macOS. Built for **Detroit techno, house, trance and dan
 | **PLAY/PAUSE** | Play / pause |
 | **CUE** | Set cue / return to cue / stutter play (hold) |
 | **Shift + CUE** | Jump to cue and stop |
-| **SYNC** | This deck becomes follower, other deck becomes master — snaps bar phase immediately |
+| **SYNC** | This deck becomes follower, other deck becomes master — snaps bar phase and locks tempo |
 | **Shift + SYNC** | Set loop IN point |
 | **SYNC (2nd press while follower)** | Re-snap to master's current bar phase |
 
 ### Tempo Slider
 
-Adjusts playback rate ±16%. Moving the slider while sync is active breaks sync for that deck.
+Adjusts playback rate ±16%. Moving the **master** slider adjusts both decks together when sync is active. Moving the **follower** slider redirects to the master — sync stays on, tempo changes together.
 
 ### Jog Wheel
 
@@ -262,6 +262,30 @@ The show stops immediately when a track is loaded. All UI state (knob positions,
 Select tracks in the library, then click **🔬 Inspect Stems** in the toolbar. No deck load required — stems are separated and cached automatically on first inspect.
 
 The inspector runs fully local DSP analysis: band energy ratios, cross-contamination correlation, adaptive auto-fix (HP filters, shelf cuts, Wiener soft-mask refinement), and logs results to `~/.udj/library.db`. High drums→synths and drums→vocals correlation on dance music is identified as rhythmic co-occurrence (`~ RHYTHMIC`) rather than acoustic bleed, so no unnecessary DSP is applied.
+
+---
+
+## Beat Sync Engine
+
+U-DJ uses a studio-grade sync engine modelled on rekordbox/Mixxx behaviour:
+
+- **Hard rate lock** — follower tempo matches master exactly every audio callback, zero wobble
+- **Bar-phase snap** — on SYNC press or master play-start, follower snaps to the master's current bar phase with a 12ms fade-in (imperceptible in a live mix)
+- **Continuous phase P-controller** — sub-millisecond position nudges keep both decks within ±1ms of each other once locked
+- **Tempo slider while synced** — follower slider redirects to master; neither deck breaks sync
+- **No backward playback** — nudge is capped to never exceed the buffer advance, eliminating the screech that position-jump sync engines produce
+
+---
+
+## Audio Quality
+
+- **Catmull-Rom (Hermite) interpolation** — same quality as Mixxx cubic at any playback rate
+- **Equal-power crossfades** — sin/cos curves on cue triggers, loop boundaries, and stem toggles
+- **Soft limiting** — smooth knee at 0 dBFS on master bus and stem mix
+- **TPDF dither** — 24-bit triangular dither on final output
+- **DC blocking** — single-pole high-pass at ~5 Hz eliminates DC offset buildup
+- **Loudness normalisation** — optional per-deck EBU R128 gain (NORM button)
+- **Buffer size** — 512 samples at 44100 Hz (~11.6ms latency)
 
 ---
 

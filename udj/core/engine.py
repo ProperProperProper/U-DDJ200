@@ -27,7 +27,9 @@ from . import stems as stems_mod
 from . import event_log
 
 NUM_DECKS   = 2
-BUFFER_SIZE = 512
+BUFFER_SIZE    = 512
+_SNAP_FADE     = 512    # crossfade on sync-button / master-swap snap (~12ms)
+_SNAP_FADE_IN  = 1024   # fade-in from silence on play-start snap (~23ms)
 
 # ── Sync constants ────────────────────────────────────────────────────────────
 # Strategy: hard rate lock + continuous position P-controller.
@@ -189,6 +191,7 @@ class AudioEngine:
         self._last_master_rate      = [None, None]   # reserved
         self._sync_log_tick         = 0               # throttle sync logging to ~1 Hz
         self._phrase_sync_triggered = False           # read by mixer_widget via getattr to flash PHRASE SYNC btn
+        self._play_start_tick       = [0] * NUM_DECKS  # callbacks since last play-start (0 = not started)
 
     # ── stream ────────────────────────────────────────────────
 
@@ -239,7 +242,8 @@ class AudioEngine:
         """
         master = self._find_master()
         if master is None:
-            # Log once per second when no master found
+            for i, d in enumerate(self.decks):
+                self._was_playing[i] = d.playing
             self._sync_log_tick += 1
             if self._sync_log_tick >= 43:
                 self._sync_log_tick = 0
@@ -247,6 +251,11 @@ class AudioEngine:
                           for i, d in enumerate(self.decks)]
                 print(f"[SYNC] no master — {' | '.join(states)}")
             return
+
+        # Detect master transitioning from stopped → playing so followers can
+        # do a clean snap-with-fade-in rather than a jarring position nudge.
+        master_idx         = self.decks.index(master)
+        master_just_started = master.playing and not self._was_playing[master_idx]
 
         sr             = master.sample_rate
         # Include key_shift ratio: key shift changes effective playback speed.
@@ -287,28 +296,28 @@ class AudioEngine:
             self._was_playing[f_idx] = follower.playing
 
             if not follower.playing:
+                self._play_start_tick[f_idx] = 0
                 continue
+
+            if just_started:
+                self._play_start_tick[f_idx] = 1
+                rate_before = follower.rate
+                print(
+                    f"[PLAY-START] D{f_idx+1}  pos={follower.position/sr:.3f}s"
+                    f"  rate_before={rate_before:.4f}"
+                    f"  bpm={follower.bpm:.2f}  master_eff_bpm={master_eff_bpm:.2f}"
+                    f"  xfade_len={follower._xfade_len}  xfade_done={follower._xfade_done}"
+                )
+            elif self._play_start_tick[f_idx] > 0:
+                self._play_start_tick[f_idx] += 1
 
             # ALWAYS hard-lock rate to nominal — zero tempo wobble.
-            # follower.rate tracks master_eff_bpm every callback, so the follower
-            # immediately matches master tempo whenever the slider moves.
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
             nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
+            rate_before = follower.rate
             follower.rate = max(0.5, min(2.0, nominal))
 
-            # One-shot bar-phase snap on play-start only.
-            # DO NOT snap on rate/tempo change — the rate is already updated above
-            # every callback, so the follower tracks instantly. Snapping on rate
-            # change caused _do_snap() to fire on every callback while the slider
-            # was moving (~86×/s), hard-jumping the follower position each time.
-            if just_started:
-                print(f"[SNAP] D{f_idx+1} play-start  bar_phase={m_bar_phase:.3f}")
-                self._do_snap(master, follower, master_bar, m_bar_phase)
-                continue
-
             # Continuous phase P-controller — position nudge, rate untouched.
-            # Uses stored beat grid for both master and follower phase so that
-            # BPM drift in either track doesn't accumulate into a phase error.
             follower_beat = _local_beat_len(follower, sr)
             f_bd  = beat_distance_grid(follower.position, follower.beats,
                                        follower.first_beat, follower_beat)
@@ -316,16 +325,42 @@ class AudioEngine:
             if error >  0.5: error -= 1.0
             if error < -0.5: error += 1.0
 
-            # Phase correction: direct position nudge (not rate tweak).
-            # Rate tweak fights itself because rate is reset to nominal each callback.
-            # Position nudge is immediate, inaudible (<1ms), and converges in <1 bar.
             nudge_samples = 0.0
             if not follower._scratch_active and abs(error) > _PHASE_DEAD:
-                nudge_beats = float(np.clip(error * _NUDGE_GAIN, -_PHASE_NUDGE_CAP, _PHASE_NUDGE_CAP))
-                nudge_samples = nudge_beats * master_beat
                 audio_len = len(follower.audio) if follower.audio is not None else 0
-                follower.position = float(np.clip(
-                    follower.position + nudge_samples, 0.0, max(0, audio_len - 2)))
+
+                if (master_just_started or just_started) and abs(error) > 0.05:
+                    # Large error on play-start: hard snap + fade-in from silence.
+                    # 12ms of silence is imperceptible in a live mix — far better
+                    # than a position-nudge glitch audible over the monitors.
+                    snapped = _snap_to_grid(master, follower, sr)
+                    follower.position        = max(0.0, min(float(audio_len - 2), snapped))
+                    follower._snap_fade_done = 0
+                    follower._snap_fade_len  = self.buffer_size
+                    nudge_samples = (snapped - follower.position)  # for logging only
+                    print(f"[SNAP-FADE] D{f_idx+1}  err={error:+.4f}beats  snapped={snapped/sr:.3f}s")
+                else:
+                    # Small / ongoing error: position nudge capped at 1ms.
+                    # Below the ~1ms click-detection threshold — inaudible.
+                    nudge_beats   = float(np.clip(error * _NUDGE_GAIN, -_PHASE_NUDGE_CAP, _PHASE_NUDGE_CAP))
+                    nudge_samples = nudge_beats * master_beat
+                    max_nudge     = sr * 0.001   # 1ms hard cap
+                    nudge_samples = float(np.clip(nudge_samples, -max_nudge, max_nudge))
+                    follower.position = float(np.clip(
+                        follower.position + nudge_samples, 0.0, max(0, audio_len - 2)))
+
+            # Dense logging for first 20 callbacks after play-start
+            tick = self._play_start_tick[f_idx]
+            if 0 < tick <= 20:
+                nudge_ms = nudge_samples / sr * 1000.0
+                print(
+                    f"[PS-{tick:02d}] D{f_idx+1}"
+                    f"  rate {rate_before:.4f}→{follower.rate:.4f}"
+                    f"  err={error:+.4f}beats"
+                    f"  nudge={nudge_ms:+.2f}ms"
+                    f"  pos={follower.position/sr:.3f}s"
+                    f"  m_bd={m_bd:.4f}  f_bd={f_bd:.4f}"
+                )
 
             # Log sync state ~1 Hz (every ~43 callbacks)
             self._sync_log_tick += 1
@@ -412,6 +447,9 @@ class AudioEngine:
         # is the correct phase reference. Follower will align and wait for play.
         snapped   = _snap_to_grid(master, follower, sr)
         audio_len = len(follower.audio)
+        follower._xfade_src_pos = follower.position
+        follower._xfade_len     = _SNAP_FADE
+        follower._xfade_done    = 0
         follower.position = max(0.0, min(float(audio_len - 2), snapped))
         follower.cue_point = int(follower.position)
         m_bar = bar_distance(master.position, None, master.first_beat,

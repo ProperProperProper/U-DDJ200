@@ -125,6 +125,10 @@ class Deck:
         self._xfade_len:     int   = 0     # crossfade duration in samples
         self._xfade_done:    int   = 0     # samples completed so far
 
+        # Snap fade-in — silence → full volume ramp after a position snap
+        self._snap_fade_done: int = 0
+        self._snap_fade_len:  int = 0
+
         self.waveform: Optional[np.ndarray] = None  # (N, 3) float32 lo/mid/hi
 
         self.on_track_loaded:       Optional[Callable] = None
@@ -742,6 +746,16 @@ class Deck:
                 if first_bad > 0:
                     self.position = float(pos[first_bad - 1]) + rate
                 self.playing = False
+
+            # Post-snap fade-in — ramp from silence to full after a position snap.
+            if self._snap_fade_done < self._snap_fade_len:
+                n = min(frames, self._snap_fade_len - self._snap_fade_done)
+                ramp = np.linspace(
+                    self._snap_fade_done / self._snap_fade_len,
+                    (self._snap_fade_done + n) / self._snap_fade_len,
+                    n, dtype=np.float32)
+                out[:n] *= ramp[:, np.newaxis]
+                self._snap_fade_done += n
 
             # Loudness normalisation — only applied when gain_enabled is True
             # (toggled by the user via the NORM button in the mixer).

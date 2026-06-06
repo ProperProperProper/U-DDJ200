@@ -312,11 +312,14 @@ class DDJ200:
                     centre = 0x2000
                     pct    = (raw - centre) / centre   # up=-1 (slow), down=+1 (fast)
                     rate   = 1.0 + pct * 0.16          # ±16 %
-                    self.engine.deck(d).rate = max(0.5, min(2.0, rate))
-                    # Master can freely adjust tempo — PLL tracks automatically.
-                    # Only the follower manually overriding tempo breaks sync.
-                    if self.engine.deck(d).sync_follower:
-                        self._unsync_deck(d)
+                    clamped = max(0.5, min(2.0, rate))
+                    deck = self.engine.deck(d)
+                    if deck.sync_follower:
+                        # Redirect to master so both tracks change tempo
+                        # together without breaking sync.
+                        self.engine.deck(1 - d).rate = clamped
+                    else:
+                        deck.rate = clamped
                     return
                 if note == CC_VOL_MSB:
                     self._vol_msb[d] = val; return
