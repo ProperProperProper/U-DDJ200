@@ -235,6 +235,7 @@ class LibraryWidget(QWidget):
         bar.addWidget(self._btn_d1)
         bar.addWidget(self._btn_d2)
         bar.addWidget(self._cpu_label)
+        self._toolbar = bar   # exposed so main_window can inject extra buttons
 
         # Table
         self._model = TrackModel()

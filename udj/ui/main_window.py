@@ -71,13 +71,6 @@ class MainWindow(QMainWindow):
         sb.addWidget(log_btn)
         self._log_btn = log_btn
 
-        clr_btn = QPushButton("⊘  CLR LOG")
-        clr_btn.setFixedHeight(20)
-        clr_btn.setStyleSheet(
-            _sb_btn_base +
-            "QPushButton:pressed{background:#1a0a00;border-color:#cc4400;color:#ff6622;}")
-        clr_btn.clicked.connect(self._dev_log._clear)
-        sb.addWidget(clr_btn)
 
         QTimer.singleShot(500, self._check_midi)
 
@@ -136,6 +129,19 @@ class MainWindow(QMainWindow):
         )
         self.library.setMinimumHeight(200)
         root.addWidget(self.library, 1)
+
+        # Inject CLR LOG into the library toolbar (same row as other lib buttons)
+        clr_log_btn = QPushButton("⊘  Clear Log")
+        clr_log_btn.setFixedHeight(26)
+        clr_log_btn.setStyleSheet(
+            "QPushButton{background:#141420;border:1px solid #cc440055;"
+            "border-radius:3px;color:#cc4400;font-size:9px;"
+            "font-weight:bold;letter-spacing:0.5px;padding:0 10px;}"
+            "QPushButton:hover{background:#1c1c2a;border-color:#cc4400;}"
+            "QPushButton:pressed{background:#0e0e18;}")
+        clr_log_btn.clicked.connect(self._dev_log._clear)
+        self.library._toolbar.insertWidget(
+            self.library._toolbar.count() - 1, clr_log_btn)
 
         # Give the MIDI controller a reference so shift+CFX can scroll/load
         self.controller.library = self.library
