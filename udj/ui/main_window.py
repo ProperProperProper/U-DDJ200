@@ -20,6 +20,7 @@ from .mixer_widget import MixerWidget
 from .library_widget import LibraryWidget
 from .beat_grid_widget import BeatGridWidget
 from .dev_log import DevLogWindow
+from ..midi.light_show import IdleLightShow
 
 
 class MainWindow(QMainWindow):
@@ -147,6 +148,13 @@ class MainWindow(QMainWindow):
         _deck_widgets = [self.deck1_widget, self.deck2_widget]
         self.controller.on_pad_mode_changed = (
             lambda d, m: _deck_widgets[d]._sig_pad_mode.emit(m))
+
+        # Idle light show — starts when both decks are empty
+        self._light_show = IdleLightShow(
+            self.controller, _deck_widgets, self.engine,
+            mixer_widget=self.mixer_widget,
+            library_widget=self.library, parent=self)
+        self._light_show.start_polling()
 
     # ──────────────────────────────────────────────────────────
     #  Track loading

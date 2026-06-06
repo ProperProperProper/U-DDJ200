@@ -233,6 +233,30 @@ Centre = bypass on all effects.
 
 ---
 
+## Idle Light Show
+
+When no tracks are loaded on either deck, U-DJ runs an attract-mode animation across every LED and UI element:
+
+**Hardware (DDJ-200):**
+- Rainbow comet sweeps across all 7 pads on both decks — all three LED layers (hot cue, beat loop, sampler) fire simultaneously
+- PLAY + CUE flash as the comet enters each deck
+- SYNC cross-fades: deck 1 lit during the first half of the sweep, deck 2 during the second
+- PFL alternates between decks on a slow ~1s throb
+- Master row ripples: TRANS FX → PHRASE SYNC → MASTER HP → pause → repeat
+
+**UI:**
+- Pad widgets chase the same comet with a rainbow colour trail
+- All EQ and FX knobs spin randomly and cycle through the palette
+- Mode tabs (STEMS / HOT CUE / BEAT LOOP / BEAT JUMP) flash a random colour per deck
+- Crossfader sweeps a slow sine wave A→B→A
+- Channel badges, NO TRACK labels, and FILTER selectors pulse through the palette
+- TRANS FX button pulses in sync with the hardware
+- Library toolbar buttons light up sequentially
+
+The show stops immediately when a track is loaded. All UI state (knob positions, mode selections, crossfader) is restored exactly as it was.
+
+---
+
 ## 🔬 Stem Inspection Tool
 
 Select tracks in the library, then click **🔬 Inspect Stems** in the toolbar. No deck load required — stems are separated and cached automatically on first inspect.
@@ -318,11 +342,13 @@ python3 main.py
 
 ```bash
 python3 -m PyInstaller udj.spec --clean -y
+rm -rf /Applications/U-DJ.app
 cp -R dist/U-DJ.app /Applications/U-DJ.app
 open /Applications/U-DJ.app
 ```
 
-> Always use `--clean -y`. Never incremental builds.
+> Always use `--clean -y`. Never incremental builds.  
+> Always `rm -rf` the old bundle before `cp -R` — plain copy merges rather than replaces, leaving stale files from the previous build.
 
 ### 7. First launch
 

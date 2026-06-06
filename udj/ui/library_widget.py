@@ -303,10 +303,15 @@ class LibraryWidget(QWidget):
         self._watcher.addPath(folder)
 
         def _done():
-            self._model.reload()
-            self._analyse_after_scan()
-            if callable(getattr(self, 'on_folder_added', None)):
-                self.on_folder_added()
+            # scan_directory fires this from a ThreadPoolExecutor worker thread.
+            # All UI work must be marshalled back to the main thread.
+            from PyQt6.QtCore import QTimer
+            def _on_main():
+                self._model.reload()
+                self._analyse_after_scan()
+                if callable(getattr(self, 'on_folder_added', None)):
+                    self.on_folder_added()
+            QTimer.singleShot(0, _on_main)
 
         scan_directory(folder, on_done=_done)
 

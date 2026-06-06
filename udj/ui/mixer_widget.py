@@ -278,6 +278,7 @@ class MixerWidget(QWidget):
         self._deck_peak_fns  = deck_peak_fns or []
 
         self._stems_lbl: list = [None, None]
+        self._badges:    list = []
         self._eq_knobs:  list = [[], []]
         self._fx_knobs:  list = []
         self._pfl_btns:  list = []
@@ -292,7 +293,7 @@ class MixerWidget(QWidget):
 
     def _build_ui(self):
         self.setObjectName("MixerWidget")
-        self.setFixedWidth(340)
+        self.setFixedWidth(400)
         self.setStyleSheet("background:#090910;")
 
         root = QVBoxLayout(self)
@@ -340,10 +341,13 @@ class MixerWidget(QWidget):
             cv.setContentsMargins(6, 6, 6, 6)
             cv.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-            # ── header row: badge | status | fx selector ──────────────────────
+            # ── header: row1 = badge | stretch | combo  /  row2 = status ─────────
+            hdr_wrap = QVBoxLayout()
+            hdr_wrap.setSpacing(2)
+            hdr_wrap.setContentsMargins(0, 0, 0, 4)
+
             hdr = QHBoxLayout()
-            hdr.setSpacing(5)
-            hdr.setContentsMargins(0, 0, 0, 4)
+            hdr.setSpacing(4)
 
             badge = QLabel(_CH_LABELS[ch])
             badge.setFixedSize(20, 20)
@@ -353,26 +357,20 @@ class MixerWidget(QWidget):
                 f"background:{accent};border-radius:3px;"
                 f"letter-spacing:0px;")
             hdr.addWidget(badge)
+            self._badges.append(badge)
 
-            status = QLabel("NO TRACK")
-            status.setAlignment(Qt.AlignmentFlag.AlignVCenter |
-                                Qt.AlignmentFlag.AlignLeft)
-            status.setStyleSheet(
-                "color:#252535;font-size:7px;background:transparent;"
-                "letter-spacing:1px;")
-            self._stems_lbl[ch] = status
-            hdr.addWidget(status, 1)
+            hdr.addStretch()
 
             combo = QComboBox()
             combo.addItems(FX_NAMES)
             combo.setCurrentText("FILTER")
             combo.setFixedHeight(18)
-            combo.setFixedWidth(62)
+            combo.setFixedWidth(56)
             combo.setStyleSheet(
                 "QComboBox{background:#0d0d14;color:#555568;"
                 "border:1px solid #202030;border-radius:2px;"
-                "font-size:7px;padding:0 4px;letter-spacing:1px;}"
-                "QComboBox::drop-down{border:none;width:12px;}"
+                "font-size:7px;padding:0 3px;}"
+                "QComboBox::drop-down{border:none;width:10px;}"
                 "QComboBox QAbstractItemView{background:#111120;"
                 "color:#777788;selection-background-color:#1e1e30;"
                 "font-size:7px;}")
@@ -381,9 +379,19 @@ class MixerWidget(QWidget):
             hdr.addWidget(combo)
             self._fx_combos.append(combo)
 
-            cv.addLayout(hdr)
+            hdr_wrap.addLayout(hdr)
+
+            status = QLabel("NO TRACK")
+            status.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            status.setStyleSheet(
+                "color:#252535;font-size:7px;background:transparent;"
+                "letter-spacing:0.5px;")
+            self._stems_lbl[ch] = status
+            hdr_wrap.addWidget(status)
+
+            cv.addLayout(hdr_wrap)
             cv.addWidget(_sep())
-            cv.addSpacing(4)
+            cv.addSpacing(2)
 
             # ── EQ + FX knobs ──────────────────────────────────────────────────
             for el, eb in _EQ_BANDS:
