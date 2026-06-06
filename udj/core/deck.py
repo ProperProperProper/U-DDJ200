@@ -16,7 +16,48 @@ from . import event_log
 NUM_HOT_CUES    = 8
 BEAT_LOOP_SIZES = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 STEM_NAMES      = ["drums", "bass", "other", "vocals"]
-_LOOP_XFADE     = 64   # samples crossfade at loop boundary (prevents click)
+_LOOP_XFADE     = 64   # samples crossfade at loop boundary
+
+WAVEFORM_HOP    = 200  # samples per waveform frame (~4.5 ms at 44100 Hz)
+_WF_FFT         = 256  # FFT size for spectral analysis
+_WF_CHUNK       = 2048 # frames per processing chunk (keeps memory low)
+
+
+def _build_waveform(audio: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Pre-compute 3-band spectral waveform for display.
+    Returns float32 array (N, 3): [lo, mid, hi] each normalised 0-1.
+    Runs in deck load thread — never blocks audio callback.
+    """
+    mono      = audio.mean(axis=1).astype(np.float32)
+    hop       = WAVEFORM_HOP
+    n_frames  = len(mono) // hop
+    if n_frames < 2:
+        return np.zeros((2, 3), np.float32)
+
+    freq_res = sr / _WF_FFT
+    lo_end   = max(1, int(250  / freq_res))   # 0–250 Hz   → bass / kick
+    mi_end   = max(lo_end + 1, int(5000 / freq_res))  # 250–5 kHz  → mid / synth
+    # high = mi_end .. Nyquist                          → air / hats
+
+    wf = np.zeros((n_frames, 3), np.float32)
+
+    for c0 in range(0, n_frames, _WF_CHUNK):
+        c1     = min(c0 + _WF_CHUNK, n_frames)
+        cn     = c1 - c0
+        chunk  = mono[c0 * hop : c1 * hop].reshape(cn, hop)
+        mag    = np.abs(np.fft.rfft(chunk, n=_WF_FFT, axis=1)).astype(np.float32)
+        lo_e   = np.sqrt(np.mean(mag[:, 1     : lo_end + 1] ** 2, axis=1) + 1e-10)
+        mi_e   = np.sqrt(np.mean(mag[:, lo_end: mi_end]     ** 2, axis=1) + 1e-10)
+        hi_e   = np.sqrt(np.mean(mag[:, mi_end:]            ** 2, axis=1) + 1e-10)
+        wf[c0:c1] = np.stack([lo_e, mi_e, hi_e], axis=1)
+
+    # Normalise each band by its 99th percentile so all tracks fill the display
+    for b in range(3):
+        p = np.percentile(wf[:, b], 99)
+        if p > 1e-6:
+            wf[:, b] /= p
+    return np.clip(wf, 0.0, 1.0)
 
 
 class Deck:
@@ -78,6 +119,8 @@ class Deck:
 
         self.key_shift: int = 0   # semitones ±12; applied as playback rate multiplier
 
+        self.waveform: Optional[np.ndarray] = None  # (N, 3) float32 lo/mid/hi
+
         self.on_track_loaded:       Optional[Callable] = None
         self.on_play_state_changed: Optional[Callable] = None
         self.on_hot_cue_changed:    Optional[Callable] = None
@@ -111,6 +154,7 @@ class Deck:
             np.clip(audio, -1.0, 1.0).astype(np.float32))
 
         with self._lock:
+            self.waveform     = None
             self.audio        = audio
             self.position     = 0.0
             self.playing      = False
@@ -129,7 +173,7 @@ class Deck:
             if metadata:
                 self.title  = metadata.get("title",  "")
                 self.artist = metadata.get("artist", "")
-                self.bpm      = float(metadata.get("bpm",  0) or 0)
+                self.bpm = float(metadata.get("bpm", 0) or 0)
                 self.key      = metadata.get("key",   "")
                 self._camelot = metadata.get("camelot", "") or ""
                 self.energy   = int(metadata.get("energy", 0) or 0)
@@ -172,6 +216,9 @@ class Deck:
                 self.beats           = None
                 self.phrases         = None
                 self.gain_linear     = 1.0
+
+        # Waveform — compute in this thread so paint never has to wait
+        self.waveform = _build_waveform(audio, self.sample_rate)
 
         n_beats = len(self.beats) if self.beats is not None else 0
         n_cues  = sum(1 for c in self.hot_cues if c is not None)

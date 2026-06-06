@@ -202,16 +202,11 @@ Centre = bypass on all effects.
 **+ Add Folder** — replaces library with new folder scan  
 **⟳ Analyse All** — queues all tracks for analysis and stem pre-computation
 
-**Pre-compute stems before a gig:**
-```bash
-python3 stem_example.py /path/to/your/music
-```
-
 ---
 
 ## 🔬 Stem Inspection Tool (dev)
 
-Load tracks on the decks, then click **🔬 Inspect Stems** in the library toolbar. This sends spectrogram images and waveform metrics to Claude claude-sonnet-4-6, which analyses stem separation quality and recommends post-processing improvements specific to your tracks.
+Load tracks on the decks, then click **🔬 Inspect Stems** in the library toolbar. Requires stems to be cached (● green dot). Sends spectrogram images and waveform metrics to Claude Sonnet, which analyses stem separation quality and recommends post-processing improvements for your tracks.
 
 Requires `ANTHROPIC_API_KEY` in your environment.
 
@@ -223,7 +218,7 @@ Requires `ANTHROPIC_API_KEY` in your environment.
 |------|----------|
 | `~/.udj/library.db` | Track database |
 | `~/.udj/events.db` | Sync/quantise event log |
-| `~/udj_cache/<hash>/` | Stem WAV cache |
+| `~/.udj/stems/<hash>.npz` | Stem cache |
 | `~/.cache/torch/hub/checkpoints/` | Demucs model weights |
 
 ---

@@ -18,7 +18,7 @@ STEMS_DIR  = Path.home() / ".udj" / "stems"   # pre-computed stems cache
 
 # Bump when beat grid / downbeat detection algorithm changes.
 # Tracks with a different stored version are re-analysed on startup.
-ANALYSIS_VERSION = "v2"   # v2: two-pass downbeat (kick + chroma novelty)
+ANALYSIS_VERSION = "v3"   # v3: start_bpm=130 + 110-185 filter (fixes half-tempo detection)
 
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".ogg", ".m4a", ".opus"}
 

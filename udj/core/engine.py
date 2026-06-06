@@ -238,7 +238,7 @@ class AudioEngine:
             if not follower.playing:
                 continue
 
-            # ALWAYS set exact nominal — hard tempo lock.
+            # ALWAYS hard-lock rate to nominal — zero tempo wobble.
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
             nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
             follower.rate = max(0.5, min(2.0, nominal))
@@ -380,6 +380,7 @@ class AudioEngine:
             self._was_playing[follower_idx] = False
 
     def phrase_sync(self, follower_idx: int):
+        self._phrase_sync_triggered = True
         """
         Snap follower to the next upcoming PHRASE boundary in the master.
         More musical than bar-sync for long-form techno structures — aligns

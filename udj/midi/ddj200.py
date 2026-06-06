@@ -85,8 +85,9 @@ CC_XF_MSB    = 0x1F
 CC_XF_LSB    = 0x3F
 CC_MASTER_VOL = 0x63          # master output level (on 0xB6)
 CC_HP_MIX     = 0x06          # headphone CUE/MASTER blend (on 0xB6)
-NOTE_PHRASE_SYNC = 0x58       # Shift+SYNC = phrase sync (overrides loop-in)
-NOTE_TRANS_FX    = 0x47       # Beat FX on button = transition FX (MASTER ch 0x96)
+NOTE_TRANS_FX     = 0x5A   # TRANSITION FX  — normal press of TRANS FX/PHRASE SYNC button (0x96)
+NOTE_PHRASE_SYNC  = 0x59   # PHRASE SYNC    — shift press  of same button (0x96)
+NOTE_MASTER_HP    = 0x63   # MASTER HP      — headphone master button (0x96)
 
 # Beat loop pad notes
 BL_BASE = 0x60   # pads 0x60–0x67
@@ -138,8 +139,9 @@ class DDJ200:
         self._eq_target       = [[63, 63, 63],          # physical knob target (0-127)
                                  [63, 63, 63]]          # 63 = centre = 0 dB
 
-        self._connected = False
-        self._synced    = [False, False]   # per-deck sync-mode state
+        self._connected       = False
+        self._synced          = [False, False]
+        self._trans_fx_active = False
 
     # ──────────────────────────────────────────────────────────
     #  Connection
@@ -205,8 +207,6 @@ class DDJ200:
         self._dispatch(status, data)
 
     def _dispatch(self, status: int, data: list[int]):
-        # Debug — log anything not handled so we can find CFX address
-        pass  # handled below; unmatched messages fall through silently
         note = data[0] if data else 0
         val  = data[1] if len(data) > 1 else 0
 
@@ -279,14 +279,10 @@ class DDJ200:
                     return
 
                 if note == NOTE_PFL and val:
-                    if self._shift[d]:
-                        # Shift+PFL: Key Sync — match this deck's key to master
-                        self._key_sync(d)
-                    else:
-                        mixer = self.engine.mixer
-                        mixer.pfl[d] = not mixer.pfl[d]
-                        self._send(ch, NOTE_PFL,
-                                   LED_ON if mixer.pfl[d] else LED_OFF)
+                    mixer = self.engine.mixer
+                    mixer.pfl[d] = not mixer.pfl[d]
+                    self._send(ch, NOTE_PFL,
+                               LED_ON if mixer.pfl[d] else LED_OFF)
                     return
 
                 if note == NOTE_TOUCH:
@@ -294,7 +290,7 @@ class DDJ200:
                         self.engine.deck(d).jog_scratch_start()
                         self._jog_touch[d] = True
                         if self.engine.deck(d).sync_follower:
-                            self._unsync_deck(d)  # follower scratch breaks sync
+                            self._unsync_deck(d)
                     else:
                         self.engine.deck(d).jog_scratch_stop()
                         self._jog_touch[d] = False
@@ -391,23 +387,39 @@ class DDJ200:
                 self.engine.mixer.headphone_mix = val / 127.0
                 return
 
-        # ── MASTER section (0x96) — Beat FX / Transition FX ──────────────────
+        # ── MASTER section (0x96) ─────────────────────────────────────────────
         if status == 0x96 and val:
             if note == NOTE_TRANS_FX:
-                # Transition FX: beat-synced filter sweep + echo on both channels
-                # Toggles on/off — LED reflects state
-                self._trans_fx_active = not getattr(self, '_trans_fx_active', False)
+                self._trans_fx_active = not self._trans_fx_active
                 if self._trans_fx_active:
                     for d in range(2):
                         self.engine.mixer.set_fx_type(d, "FILTER")
-                        self.engine.mixer.set_fx_raw(d, 20)   # deep filter close
-                    self._send(0x96, note, LED_ON)
-                    print("[FX] Transition FX ON")
+                    self._send(0x96, NOTE_TRANS_FX, LED_ON)
+                    threading.Thread(target=self._run_trans_fx_sweep,
+                                     daemon=True).start()
                 else:
                     for d in range(2):
-                        self.engine.mixer.set_fx_raw(d, 64)   # bypass
-                    self._send(0x96, note, LED_OFF)
-                    print("[FX] Transition FX OFF")
+                        self.engine.mixer.set_fx_raw(d, 64)
+                    self._send(0x96, NOTE_TRANS_FX, LED_OFF)
+                return
+
+            if note == NOTE_PHRASE_SYNC:
+                for d in range(2):
+                    if self.engine.deck(d).sync_follower:
+                        self.engine.phrase_sync(d)
+                        break
+                else:
+                    self.engine.phrase_sync(1)
+                self._send(0x96, NOTE_PHRASE_SYNC, LED_ON)
+                threading.Timer(0.4, lambda: self._send(0x96, NOTE_PHRASE_SYNC, LED_OFF)).start()
+                return
+
+            if note == NOTE_MASTER_HP:
+                # Toggle master mix monitoring in headphones
+                self.engine.mixer.pfl_master = not getattr(
+                    self.engine.mixer, 'pfl_master', False)
+                self._send(0x96, NOTE_MASTER_HP,
+                           LED_ON if self.engine.mixer.pfl_master else LED_OFF)
                 return
 
         # ── Performance pads — mode-aware ─────────────────────
@@ -785,16 +797,66 @@ class DDJ200:
         set_ = self.engine.deck(d).cue_point >= 0
         self._send(CH[d], NOTE_CUE, LED_ON if set_ else LED_OFF)
 
+    def _run_trans_fx_sweep(self):
+        """Beat-synced filter sweep: closes over 2 bars then opens back. Runs in background thread."""
+        import time
+        # Find a playing deck to derive beat length
+        beat_sec = 0.5  # fallback: 120 BPM
+        for d in range(2):
+            deck = self.engine.deck(d)
+            if deck.playing and deck.bpm > 0:
+                beat_sec = 60.0 / (deck.bpm * deck.rate)
+                break
+        bar_sec   = beat_sec * 4
+        steps     = 32
+        step_time = bar_sec / steps  # one bar sweep, 32 steps
+
+        # Sweep down: filter closes (64 → 10)
+        for i in range(steps):
+            if not self._trans_fx_active:
+                break
+            raw = int(64 - (54 * i / steps))
+            for d in range(2):
+                self.engine.mixer.set_fx_raw(d, raw)
+            time.sleep(step_time)
+
+        if not self._trans_fx_active:
+            for d in range(2):
+                self.engine.mixer.set_fx_raw(d, 64)
+            return
+
+        # Hold at bottom for one bar
+        time.sleep(bar_sec)
+
+        # Sweep up: filter opens (10 → 64)
+        for i in range(steps):
+            if not self._trans_fx_active:
+                break
+            raw = int(10 + (54 * i / steps))
+            for d in range(2):
+                self.engine.mixer.set_fx_raw(d, raw)
+            time.sleep(step_time)
+
+        # Done — reset
+        for d in range(2):
+            self.engine.mixer.set_fx_raw(d, 64)
+        self._trans_fx_active = False
+        self._send(0x96, NOTE_TRANS_FX, LED_OFF)
+
     def _init_leds(self):
         """Light up initial LED state after connection."""
         for d in range(2):
             self._send(CH[d], NOTE_PLAY, LED_OFF)
             self._send(CH[d], NOTE_CUE,  LED_OFF)
             self._send(CH[d], NOTE_SYNC, LED_OFF)
+            self._send(CH[d], NOTE_PFL,  LED_OFF)
             for i in range(8):
                 self._send(PAD_N[d], i,          LED_OFF)
                 self._send(PAD_N[d], BL_BASE + i, LED_OFF)
                 self._send(PAD_N[d], SP_BASE + i, LED_OFF)
+        self._send(0x96, NOTE_TRANS_FX,    LED_OFF)
+        self._send(0x96, NOTE_PHRASE_SYNC, LED_OFF)
+        self._send(0x96, NOTE_MASTER_HP,   LED_OFF)
 
     def _leds_off(self):
         self._init_leds()

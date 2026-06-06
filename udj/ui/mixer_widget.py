@@ -18,7 +18,7 @@ from ..core.engine import AudioEngine
 from .vu_meter     import VUMeter
 
 
-def _knob(val: int = 64, size: int = 52) -> QDial:
+def _knob(val: int = 64, size: int = 46) -> QDial:
     k = QDial()
     k.setRange(0, 127)
     k.setValue(val)
@@ -85,224 +85,206 @@ class MixerWidget(QWidget):
         self.setFixedWidth(340)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(4)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(3)
 
-        _EQ_ROWS = [
-            ("HI",  "#00c8ff", "high"),
-            ("MID", "#44cc88", "mid"),
-            ("LOW", "#ff7733", "low"),
-            ("FX",  "#bb88ff", "fx"),
+        self._eq_knobs  = [[], []]
+        self._fx_knobs  = []
+        self._fx_combos = []
+        self._pfl_btns  = []
+        self._vol_lbl   = [None, None]
+
+        _EQ_BANDS = [
+            ("HI",  "high", "#00c8ff"),
+            ("MID", "mid",  "#44cc88"),
+            ("LOW", "low",  "#ff7733"),
+            ("FX",  "fx",   "#bb88ff"),
         ]
-        self._stem_btns   = [[], []]
-        self._eq_knobs    = [[], []]
-        self._fx_knobs    = []
-        self._fx_combos   = []
+        _CH_COLORS = ["#00b8ef", "#ff7a01"]
+        _CH_LABELS = ["1", "2"]
 
-        # ── Stems status + Transition FX button ───────────────
-        top_ctrl_row = QHBoxLayout()
-        top_ctrl_row.addStretch(1)
+        # ── Three-column strip: CH1 | CENTER | CH2 ────────────
+        strip = QHBoxLayout()
+        strip.setSpacing(4)
+        strip.setContentsMargins(0, 0, 0, 0)
+
+        ch_vboxes = []
         for ch in range(2):
-            lbl = QLabel("● STEMS READY")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(
-                "color:#00ff88;font-size:8px;font-weight:bold;"
-                "background:#001a0d;border:1px solid #00ff88;"
-                "border-radius:4px;padding:1px 5px;")
+            col  = _CH_COLORS[ch]
+            dark = "#0a0e12" if ch == 0 else "#0e0c0a"
+
+            # Outer frame widget gives channel a subtle panel background
+            panel = QWidget()
+            panel.setStyleSheet(f"background:{dark};border-radius:4px;")
+            cv = QVBoxLayout(panel)
+            cv.setSpacing(1)
+            cv.setContentsMargins(4, 4, 4, 4)
+            cv.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+            # ── Channel number badge ───────────────────────────
+            hdr = QHBoxLayout()
+            hdr.setSpacing(4)
+            num = QLabel(_CH_LABELS[ch])
+            num.setFixedSize(18, 18)
+            num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            num.setStyleSheet(
+                f"color:{col};font-size:11px;font-weight:bold;"
+                f"background:{col}18;border:1px solid {col}55;"
+                f"border-radius:3px;")
+            hdr.addWidget(num)
+
+            # Status dot — tiny, unobtrusive
+            lbl = QLabel("—")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            lbl.setStyleSheet("color:#2a2a2a;font-size:7px;background:transparent;")
             self._stems_lbl[ch] = lbl
-            top_ctrl_row.addWidget(lbl)
-            if ch == 0:
-                top_ctrl_row.addStretch(2)
-        top_ctrl_row.addStretch(1)
-        root.addLayout(top_ctrl_row)
+            hdr.addWidget(lbl, 1)
 
-        # Transition FX button — applies deep filter sweep across both channels
-        trans_row = QHBoxLayout()
-        trans_row.addStretch(1)
-        self._trans_fx_btn = QPushButton("⚡ TRANSITION FX")
-        self._trans_fx_btn.setCheckable(True)
-        self._trans_fx_btn.setFixedHeight(22)
-        self._trans_fx_btn.setStyleSheet(
-            "QPushButton{color:#555;background:#0e0e18;border:1px solid #2a2a40;"
-            "border-radius:4px;padding:0 10px;font-size:9px;font-weight:bold;}"
-            "QPushButton:checked{color:#000;background:#ff6600;"
-            "border:1px solid #ff8800;}"
-            "QPushButton:pressed{background:#1a1000;}")
-        self._trans_fx_btn.toggled.connect(self._on_trans_fx)
-        trans_row.addWidget(self._trans_fx_btn)
-        trans_row.addStretch(1)
-        root.addLayout(trans_row)
-
-        # FX type selectors
-        fx_combo_row = QHBoxLayout()
-        fx_combo_row.addStretch(1)
-        for ch in range(2):
+            # FX selector — compact, right-aligned
             combo = QComboBox()
             combo.addItems(FX_NAMES)
             combo.setCurrentText("FILTER")
-            combo.setFixedWidth(84)
+            combo.setFixedHeight(16)
+            combo.setFixedWidth(58)
             combo.setStyleSheet(
-                "QComboBox{background:#0e0e18;color:#bb88ff;border:1px solid #3a2a4a;"
-                "border-radius:3px;font-size:8px;font-weight:bold;padding:1px 3px;}"
+                "QComboBox{background:#111;color:#666;border:1px solid #252525;"
+                "border-radius:2px;font-size:7px;padding:0 3px;}"
                 "QComboBox::drop-down{border:none;}"
-                "QComboBox QAbstractItemView{background:#0e0e18;color:#bb88ff;"
-                "selection-background-color:#2a1a3a;font-size:8px;}")
+                "QComboBox QAbstractItemView{background:#111;color:#888;"
+                "selection-background-color:#1e1e1e;font-size:7px;}")
             combo.currentTextChanged.connect(
                 lambda name, c=ch: self.mixer.set_fx_type(c, name))
-            fx_combo_row.addWidget(combo)
+            hdr.addWidget(combo)
             self._fx_combos.append(combo)
-            if ch == 0:
-                fx_combo_row.addStretch(2)
-        fx_combo_row.addStretch(1)
-        root.addLayout(fx_combo_row)
+            cv.addLayout(hdr)
 
-        # EQ + FX knob rows
-        for el, ec, eb in _EQ_ROWS:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 2, 0, 2)
-            row.setSpacing(2)
-            row.addStretch(1)
-            for ch in range(2):
-                e_col = QVBoxLayout()
-                e_col.setSpacing(1)
-                e_col.setContentsMargins(0, 0, 0, 0)
-                e_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-                e_col.addWidget(_lbl(el, ec, 8, True))
-                ek = _knob(val=64, size=52)
+            cv.addWidget(_sep())
+
+            # ── EQ + FX knobs ──────────────────────────────────
+            for el, eb, ec in _EQ_BANDS:
+                ek = _knob(val=64)
                 if eb == "fx":
                     ek.valueChanged.connect(lambda v, c=ch: self.mixer.set_fx_raw(c, v))
                     self._fx_knobs.append(ek)
                 else:
                     ek.valueChanged.connect(
                         lambda v, c=ch, b=eb: self.mixer.set_eq_raw(c, b, v))
-                e_col.addWidget(ek, alignment=Qt.AlignmentFlag.AlignHCenter)
-                row.addLayout(e_col)
+                kw = QVBoxLayout()
+                kw.setSpacing(0)
+                kw.setContentsMargins(0, 3, 0, 0)
+                kw.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                kw.addWidget(_lbl(el, ec, 7, True))
+                kw.addWidget(ek, alignment=Qt.AlignmentFlag.AlignHCenter)
+                cv.addLayout(kw)
                 self._eq_knobs[ch].append(ek)
-                if ch == 0:
-                    row.addStretch(2)
-            row.addStretch(1)
-            root.addLayout(row)
 
-        root.addWidget(_sep())
+            cv.addWidget(_sep())
 
-        # ── CH 1 / CH 2 channel controls (PFL + vol) ──────────
-        ch_row = QHBoxLayout()
-        ch_row.setSpacing(6)
-
-        for ch in range(2):
-            col = "#00c8ff" if ch == 0 else "#ff7a01"
-            label = "CH 1" if ch == 0 else "CH 2"
-            ch_col = QVBoxLayout()
-            ch_col.setSpacing(3)
-
-            # Channel label — large and bright
-            ch_lbl = QLabel(label)
-            ch_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            ch_lbl.setStyleSheet(
-                f"color:{col};font-size:14px;font-weight:bold;"
-                f"background:#0e0e18;border:1px solid {col}44;"
-                f"border-radius:4px;padding:2px 8px;")
-            ch_col.addWidget(ch_lbl)
-
-            # PFL button
-            b = QPushButton("CUE")
-            b.setCheckable(True)
-            b.setObjectName("PflButton")
-            b.setFixedHeight(24)
-            b.setStyleSheet(
-                f"QPushButton{{background:#111;border:1px solid #333;"
-                f"border-radius:4px;color:#555;font-size:10px;font-weight:bold;}}"
-                f"QPushButton:checked{{background:{col};border:1px solid {col};"
-                f"color:#000;}}")
-            b.toggled.connect(lambda on, c=ch: operator.setitem(self.mixer.pfl, c, on))
-            self._pfl_btns.append(b)
-            ch_col.addWidget(b)
-
-            # Vol readout
-            vol_lbl = QLabel("0.0 dB")
-            vol_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            vol_lbl.setStyleSheet(
-                f"color:{col};font-family:'Courier New';"
-                f"font-size:10px;font-weight:bold;")
-            ch_col.addWidget(vol_lbl)
-
-            ch_row.addLayout(ch_col, 1)
-            if not hasattr(self, '_vol_lbl'):
-                self._vol_lbl = [None, None]
-            self._vol_lbl[ch] = vol_lbl
-
+            # ── VU meter ──────────────────────────────────────
+            cv.addSpacing(10)
+            vu = VUMeter(compact=True, stereo=False, col_w=28)
+            vu.setFixedHeight(72)
             if ch == 0:
-                # Master column in the middle
-                master_col_layout = QVBoxLayout()
-                master_col_layout.setSpacing(3)
-                master_lbl = QLabel("MASTER")
-                master_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                master_lbl.setStyleSheet(
-                    "color:#aaa;font-size:11px;font-weight:bold;"
-                    "background:#1a1a1a;border:1px solid #444;"
-                    "border-radius:4px;padding:2px 8px;")
-                self._master_vol_lbl = QLabel("−∞ dB")
-                self._master_vol_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self._master_vol_lbl.setStyleSheet(
-                    "color:#ccc;font-family:'Courier New';"
-                    "font-size:10px;font-weight:bold;")
+                self._vu_ch1 = vu
+            else:
+                self._vu_ch2 = vu
+            cv.addWidget(vu, alignment=Qt.AlignmentFlag.AlignHCenter)
+            cv.addStretch(1)
 
-                # Phrase Sync button — single, in the middle
-                phrase_btn = QPushButton("⌛ PHRASE\nSYNC")
-                phrase_btn.setFixedHeight(36)
-                phrase_btn.setStyleSheet(
-                    "QPushButton{color:#888;background:#0e0e18;border:1px solid #444;"
-                    "border-radius:4px;font-size:8px;font-weight:bold;}"
-                    "QPushButton:pressed{color:#cc99ff;background:#1a1030;"
-                    "border:1px solid #8844cc;}")
-                phrase_btn.pressed.connect(self._on_phrase_sync)
+            # ── CUE button ────────────────────────────────────
+            cue = QPushButton("CUE")
+            cue.setCheckable(True)
+            cue.setFixedHeight(24)
+            cue.setStyleSheet(
+                f"QPushButton{{background:#111;border:1px solid #252525;"
+                f"border-radius:3px;color:#3a3a3a;font-size:9px;"
+                f"font-weight:bold;letter-spacing:2px;}}"
+                f"QPushButton:checked{{background:{col};"
+                f"border:1px solid {col};color:#000;}}")
+            cue.toggled.connect(lambda on, c=ch: operator.setitem(self.mixer.pfl, c, on))
+            self._pfl_btns.append(cue)
+            cv.addWidget(cue)
 
-                master_col_layout.addWidget(master_lbl)
-                master_col_layout.addWidget(self._master_vol_lbl)
-                master_col_layout.addWidget(phrase_btn)
-                ch_row.addLayout(master_col_layout, 1)
+            # hidden dB label — still updated in _tick for reference
+            vl = QLabel()
+            vl.hide()
+            self._vol_lbl[ch] = vl
+            cv.addWidget(vl)
 
-        root.addLayout(ch_row)
-        root.addWidget(_sep())
+            ch_vboxes.append(panel)
 
-        # ── Three VU meters: CH1 | MASTER | CH2 ───────────────
-        vu_section = QHBoxLayout()
-        vu_section.setSpacing(6)
-        vu_section.setContentsMargins(0, 0, 0, 0)
+        # ── Center column ─────────────────────────────────────
+        cpanel = QWidget()
+        cpanel.setStyleSheet("background:#0b0b0b;border-radius:4px;")
+        center = QVBoxLayout(cpanel)
+        center.setSpacing(3)
+        center.setContentsMargins(3, 4, 3, 4)
+        center.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        VU_H = 110
+        self._trans_fx_btn = QPushButton("⚡ TRANS FX")
+        self._trans_fx_btn.setCheckable(True)
+        self._trans_fx_btn.setFixedHeight(20)
+        self._trans_fx_btn.setStyleSheet(
+            "QPushButton{color:#2a2a2a;background:#0d0d0d;border:1px solid #1c1c1c;"
+            "border-radius:3px;font-size:7px;font-weight:bold;letter-spacing:1px;}"
+            "QPushButton:checked{color:#fff;background:#ff6600;"
+            "border:1px solid #ff8800;}"
+            "QPushButton:pressed{background:#110600;}")
+        self._trans_fx_btn.toggled.connect(self._on_trans_fx)
+        center.addWidget(self._trans_fx_btn)
 
-        ch1_col = QVBoxLayout()
-        ch1_col.setSpacing(2)
-        self._vu_ch1 = VUMeter(compact=True, stereo=False)
-        self._vu_ch1.setFixedHeight(VU_H)
-        ch1_col.addWidget(self._vu_ch1)
-        vu_section.addLayout(ch1_col, 1)
+        center.addWidget(_sep())
 
-        master_vu_col = QVBoxLayout()
-        master_vu_col.setSpacing(2)
-        self._vu_master = VUMeter(compact=False, stereo=True)
-        self._vu_master.setFixedHeight(VU_H)
-        master_vu_col.addWidget(self._vu_master)
-        vu_section.addLayout(master_vu_col, 2)
+        ml = QLabel("MASTER")
+        ml.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ml.setStyleSheet(
+            "color:#444;font-size:8px;font-weight:bold;letter-spacing:2px;"
+            "background:transparent;")
+        center.addWidget(ml)
 
-        ch2_col = QVBoxLayout()
-        ch2_col.setSpacing(2)
-        self._vu_ch2 = VUMeter(compact=True, stereo=False)
-        self._vu_ch2.setFixedHeight(VU_H)
-        ch2_col.addWidget(self._vu_ch2)
-        vu_section.addLayout(ch2_col, 1)
+        # hidden — kept so _tick doesn't crash
+        self._master_vol_lbl = QLabel()
+        self._master_vol_lbl.hide()
+        center.addWidget(self._master_vol_lbl)
 
-        root.addLayout(vu_section, 0)
+        center.addStretch(1)
+
+        self._vu_master = VUMeter(compact=False, stereo=True, col_w=22, show_scale=False)
+        self._vu_master.setFixedHeight(160)
+        center.addWidget(self._vu_master, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        center.addStretch(1)
+
+        ps = QPushButton("⌛\nPHRASE\nSYNC")
+        ps.setCheckable(True)
+        ps.setFixedHeight(46)
+        ps.setStyleSheet(
+            "QPushButton{color:#2a2a2a;background:#0d0d0d;"
+            "border:1px solid #1c1c1c;border-radius:3px;"
+            "font-size:6px;font-weight:bold;letter-spacing:1px;}"
+            "QPushButton:checked{color:#fff;background:#6622cc;"
+            "border:1px solid #9944ff;}"
+            "QPushButton:pressed{color:#fff;background:#4411aa;"
+            "border:1px solid #6622cc;}")
+        ps.clicked.connect(self._on_phrase_sync)
+        self._phrase_sync_btn = ps
+        center.addWidget(ps)
+
+        # Assemble strip — channel panels as widgets
+        strip.addWidget(ch_vboxes[0], 5)
+        strip.addWidget(cpanel, 3)
+        strip.addWidget(ch_vboxes[1], 5)
+        root.addLayout(strip)
+
         root.addWidget(_sep())
 
         # ── Crossfader ────────────────────────────────────────
         xf_hdr = QHBoxLayout()
-        xf_hdr.addWidget(_lbl("A", "#00c8ff", 10, True))
+        xf_hdr.addWidget(_lbl("A", "#00b8ef", 9, True))
         xf_hdr.addStretch()
-        xf_hdr.addWidget(_lbl("CROSSFADER", "#444", 8))
+        xf_hdr.addWidget(_lbl("CROSSFADER", "#282828", 7))
         xf_hdr.addStretch()
-        xf_hdr.addWidget(_lbl("B", "#ff7a01", 10, True))
+        xf_hdr.addWidget(_lbl("B", "#ff7a01", 9, True))
         root.addLayout(xf_hdr)
 
         from .pro_fader import XFader
@@ -317,38 +299,73 @@ class MixerWidget(QWidget):
 
     def _on_phrase_sync(self):
         if self.engine:
-            # Phrase-sync whichever deck is the follower
             for d in range(2):
                 if self.engine.deck(d).sync_follower:
                     self.engine.phrase_sync(d)
-                    return
-            # No follower set — sync deck 1 to deck 0
-            self.engine.phrase_sync(1)
+                    break
+            else:
+                self.engine.phrase_sync(1)
+        # Flash the button for 500 ms
+        self._phrase_sync_btn.setChecked(True)
+        QTimer.singleShot(500, lambda: self._phrase_sync_btn.setChecked(False))
 
     def _on_trans_fx(self, active: bool):
-        """Transition FX — deep filter close across both channels."""
-        for ch in range(2):
+        """Transition FX — delegates to controller sweep if available."""
+        import threading as _threading
+        ctrl = getattr(self.engine, '_controller_ref', None) if self.engine else None
+        if ctrl:
+            # Sync state so _tick doesn't revert the button
+            ctrl._trans_fx_active = active
             if active:
-                self.mixer.set_fx_type(ch, "FILTER")
-                self.mixer.set_fx_raw(ch, 20)   # close filter
+                for ch in range(2):
+                    self.mixer.set_fx_type(ch, "FILTER")
+                    if ch < len(self._fx_combos):
+                        self._fx_combos[ch].blockSignals(True)
+                        self._fx_combos[ch].setCurrentText("FILTER")
+                        self._fx_combos[ch].blockSignals(False)
+                _threading.Thread(target=ctrl._run_trans_fx_sweep,
+                                  daemon=True).start()
             else:
-                self.mixer.set_fx_raw(ch, 64)   # bypass
+                for ch in range(2):
+                    self.mixer.set_fx_raw(ch, 64)
+        else:
+            # No controller — simple toggle without sweep
+            for ch in range(2):
+                if active:
+                    self.mixer.set_fx_type(ch, "FILTER")
+                    self.mixer.set_fx_raw(ch, 20)
+                else:
+                    self.mixer.set_fx_raw(ch, 64)
 
     # ── tick ──────────────────────────────────────────────────
 
     def _tick(self):
-        # Volume dB readouts
+        # Channel vol + master vol readouts
         for ch in range(2):
-            self._vol_lbl[ch].setText(_db(self.mixer.volumes[ch]) + " dB")
+            if self._vol_lbl[ch]:
+                self._vol_lbl[ch].setText(_db(self.mixer.volumes[ch]) + " dB")
         self._master_vol_lbl.setText(_db(self.mixer.master_vol) + " dB")
 
         # Crossfader
         self._xfader.set_position(self.mixer.crossfader)
 
-        # Master vol display in vol row (show as dB)
-        mv = self.mixer.master_vol
-        mv_db = f"M:{_db(mv)} dB" if mv > 0 else "M:−∞"
-        # Sync transition FX button from MIDI state
+        # Sync CUE (PFL) buttons from mixer state — hardware can toggle them
+        for ch in range(2):
+            if ch < len(self._pfl_btns):
+                btn = self._pfl_btns[ch]
+                state = self.mixer.pfl[ch]
+                if btn.isChecked() != state:
+                    btn.blockSignals(True)
+                    btn.setChecked(state)
+                    btn.blockSignals(False)
+
+        # Flash PHRASE SYNC button when triggered from hardware
+        if self.engine and getattr(self.engine, '_phrase_sync_triggered', False):
+            self.engine._phrase_sync_triggered = False
+            self._phrase_sync_btn.setChecked(True)
+            QTimer.singleShot(500, lambda: self._phrase_sync_btn.setChecked(False))
+
+        # Sync Transition FX button from hardware MIDI state
         if self.engine:
             ctrl = getattr(self.engine, '_controller_ref', None)
             if ctrl:
@@ -372,23 +389,14 @@ class MixerWidget(QWidget):
                 lbl = self._stems_lbl[ch]
                 if lbl is not None:
                     if not has_track:
-                        lbl.setText("○ NO TRACK")
-                        lbl.setStyleSheet(
-                            "color:#444;font-size:9px;font-weight:bold;"
-                            "background:#111;border:1px solid #333;"
-                            "border-radius:4px;padding:2px 6px;")
+                        lbl.setText("NO TRACK")
+                        lbl.setStyleSheet("color:#252525;font-size:7px;background:transparent;")
                     elif not stems_ready:
-                        lbl.setText("◌ STEMS LOADING…")
-                        lbl.setStyleSheet(
-                            "color:#ffaa00;font-size:9px;font-weight:bold;"
-                            "background:#1a1200;border:1px solid #ffaa00;"
-                            "border-radius:4px;padding:2px 6px;")
+                        lbl.setText("◌ LOADING")
+                        lbl.setStyleSheet("color:#664400;font-size:7px;background:transparent;")
                     else:
-                        lbl.setText("● STEMS READY")
-                        lbl.setStyleSheet(
-                            "color:#00ff88;font-size:9px;font-weight:bold;"
-                            "background:#001a0d;border:1px solid #00ff88;"
-                            "border-radius:4px;padding:2px 6px;")
+                        lbl.setText("● STEMS")
+                        lbl.setStyleSheet("color:#006633;font-size:7px;background:transparent;")
 
         # Sync EQ knobs (0=HI, 1=MID, 2=LOW) and FX knob (3) from mixer state
         _EQ_BANDS = ["high", "mid", "low"]

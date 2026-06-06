@@ -110,25 +110,26 @@ class VUMeter(QWidget):
     MARGIN_B = 4
 
     def __init__(self, stereo: bool = False, compact: bool = False,
-                 label: str = "", parent=None):
+                 label: str = "", col_w: int = None, show_scale: bool = True,
+                 parent=None):
         super().__init__(parent)
-        self._stereo  = stereo
-        self._compact = compact
-        self._label   = label
-        self._L       = _Chan()
-        self._R       = _Chan()
+        self._stereo     = stereo
+        self._compact    = compact
+        self._label      = label
+        self._show_scale = show_scale
+        self._L          = _Chan()
+        self._R          = _Chan()
 
         if compact:
-            self._col_w   = 16
+            self._col_w   = col_w if col_w is not None else 16
             self._col_gap = 0
             self._scale_w = 0
             cols = 2 if stereo else 1
             w = cols * self._col_w + max(0, cols - 1) * 3 + 4
         else:
-            # Full meter: wider LED columns, dBFS scale on left
-            self._col_w   = 14
+            self._col_w   = col_w if col_w is not None else 14
             self._col_gap = 4
-            self._scale_w = 32
+            self._scale_w = 32 if show_scale else 0
             cols = 2 if stereo else 1
             w = self._scale_w + cols * self._col_w + max(0, cols-1)*self._col_gap + 6
 
@@ -165,7 +166,7 @@ class VUMeter(QWidget):
         qp.fillRect(0, 0, W, H, QColor("#0e0e0e"))
 
         # draw scale (full mode only)
-        if not self._compact and self._scale_w > 0:
+        if not self._compact and self._show_scale and self._scale_w > 0:
             self._draw_scale(qp, 0, top_y, self._scale_w, meter_h, seg_h)
 
         # columns

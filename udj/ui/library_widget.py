@@ -24,23 +24,22 @@ COL_MAP = ["_status", "title", "artist", "bpm", "key", "camelot", "energy", "lou
 
 
 def _analysis_status(row: dict) -> tuple[str, str]:
-    """Return (dot_char, color) indicating analysis completeness including stems."""
+    """Return (label, color) indicating analysis + stems state clearly."""
     has_beats   = bool(row.get("beat_positions_json") not in (None, "", "[]"))
     has_phrases = bool(row.get("phrase_positions_json") not in (None, "", "[]"))
     has_lufs    = row.get("loudness_lufs") is not None
     has_camelot = bool(row.get("camelot"))
     has_bpm     = bool(row.get("bpm"))
     has_stems   = bool(row.get("stems_cached")) or bool(row.get("stems_failed"))
+    full_analysis = has_beats and has_phrases and has_lufs and has_camelot and has_bpm
 
-    if has_beats and has_phrases and has_lufs and has_camelot and has_stems:
-        return "●", "#00dd88"   # fully analysed (stems cached or DSP fallback) — green
-    if has_beats and has_phrases and has_lufs and has_camelot:
-        return "●", "#44aaff"   # BPM/key done, stems queued — blue
+    if full_analysis and has_stems:
+        return "✔ READY",    "#00ee88"   # bright green — everything done
+    if full_analysis:
+        return "⏳ STEMS",   "#44aaff"   # blue — analysis done, stems pending
     if has_bpm and has_beats:
-        return "●", "#ffaa00"   # beats done, missing extras — amber
-    if has_bpm:
-        return "●", "#ff6600"   # BPM only — orange
-    return "○", "#555555"       # not analysed — grey
+        return "⚙ ANALYSING","#ffaa00"   # amber — partial
+    return "✖ NO DATA",      "#ff4444"   # red — not analysed
 
 
 class TrackModel(QAbstractTableModel):
@@ -126,13 +125,11 @@ class LibraryWidget(QWidget):
     def __init__(self,
                  on_load_deck1: Optional[Callable[[dict], None]] = None,
                  on_load_deck2: Optional[Callable[[dict], None]] = None,
-                 on_analyse_all: Optional[Callable] = None,
                  parent=None):
         super().__init__(parent)
-        self.on_load_deck1   = on_load_deck1
-        self.on_load_deck2   = on_load_deck2
-        self._on_analyse_all = on_analyse_all
-        self._active_deck    = 0
+        self.on_load_deck1 = on_load_deck1
+        self.on_load_deck2 = on_load_deck2
+        self._active_deck  = 0
         self._build_ui()
         init_db()
         self._model.reload()
@@ -155,17 +152,6 @@ class LibraryWidget(QWidget):
         self._btn_scan.setObjectName("BtnScan")
         self._btn_scan.clicked.connect(self._scan)
 
-        self._btn_analyse = QPushButton("⟳ Analyse All")
-        self._btn_analyse.setObjectName("BtnScan")
-        self._btn_analyse.setToolTip("Re-run BPM analysis + stem generation for all tracks")
-        self._btn_analyse.setStyleSheet(
-            "QPushButton{background:#111;border:1px solid #2a2a35;color:#888;"
-            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
-            "QPushButton:disabled{background:#1a2a1a;border:1px solid #00aa55;"
-            "color:#00dd88;}"
-        )
-        self._btn_analyse.clicked.connect(self._analyse_now)
-
         self._btn_stems_inspect = QPushButton("🔬 Inspect Stems")
         self._btn_stems_inspect.setObjectName("BtnScan")
         self._btn_stems_inspect.setToolTip(
@@ -179,6 +165,17 @@ class LibraryWidget(QWidget):
         )
         self._btn_stems_inspect.clicked.connect(self._run_stems_inspect)
 
+        self._btn_inspect_all = QPushButton("🔬 Inspect All")
+        self._btn_inspect_all.setObjectName("BtnScan")
+        self._btn_inspect_all.setToolTip("Inspect stems of all tracks in library with Claude")
+        self._btn_inspect_all.setStyleSheet(
+            "QPushButton{background:#111;border:1px solid #1a2a3a;color:#66aaff;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
+            "QPushButton:disabled{background:#121828;border:1px solid #66aaff;"
+            "color:#99ccff;}"
+        )
+        self._btn_inspect_all.clicked.connect(self._run_inspect_all)
+
         self._btn_d1 = QPushButton("→ Deck 1")
         self._btn_d1.setObjectName("BtnLoadDeck")
         self._btn_d1.clicked.connect(lambda: self._load_selected(0))
@@ -187,16 +184,15 @@ class LibraryWidget(QWidget):
         self._btn_d2.setObjectName("BtnLoadDeck")
         self._btn_d2.clicked.connect(lambda: self._load_selected(1))
 
-        self._progress = QProgressBar()
-        self._progress.setFixedWidth(200)
-        self._progress.setVisible(False)
-        self._progress.setFormat("%v / %m")
-        self._progress.setObjectName("ScanProgress")
-        self._progress.setStyleSheet(
-            "QProgressBar{background:#111;border:1px solid #2a2a35;border-radius:3px;"
-            "color:#00dd88;font-size:9px;text-align:center;height:18px;}"
-            "QProgressBar::chunk{background:#00aa44;border-radius:2px;}"
+        self._btn_clear = QPushButton("✕ Clear DB")
+        self._btn_clear.setObjectName("BtnScan")
+        self._btn_clear.setToolTip("Clear all tracks from library database")
+        self._btn_clear.setStyleSheet(
+            "QPushButton{background:#111;border:1px solid #3a1a1a;color:#aa4444;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
+            "QPushButton:hover{border:1px solid #cc4444;color:#ff6666;}"
         )
+        self._btn_clear.clicked.connect(self._clear_db)
 
         self._cpu_label = QLabel("")
         self._cpu_label.setVisible(False)
@@ -212,11 +208,11 @@ class LibraryWidget(QWidget):
 
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
-        bar.addWidget(self._btn_analyse)
+        bar.addWidget(self._btn_clear)
         bar.addWidget(self._btn_stems_inspect)
+        bar.addWidget(self._btn_inspect_all)
         bar.addWidget(self._btn_d1)
         bar.addWidget(self._btn_d2)
-        bar.addWidget(self._progress)
         bar.addWidget(self._cpu_label)
 
         # Table
@@ -232,7 +228,7 @@ class LibraryWidget(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # Col 0 = status dot (narrow), col 1 = Title (stretch), rest fixed
-        self._table.setColumnWidth(0, 18)
+        self._table.setColumnWidth(0, 90)   # status label
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -256,6 +252,10 @@ class LibraryWidget(QWidget):
     def _filter(self, text: str):
         self._proxy.setFilterFixedString(text)
 
+    def _clear_db(self):
+        clear_library()
+        self._model.reload()
+
     def _scan(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Music Folder")
         if not folder:
@@ -265,35 +265,14 @@ class LibraryWidget(QWidget):
         clear_library()
         self._model.reload()
 
-        self._progress.setVisible(True)
-        self._progress.setValue(0)
-
-        def _prog(done, total):
-            from PyQt6.QtCore import QMetaObject, Qt
-            pct = int(done / total * 100) if total else 100
-            self._progress.setValue(pct)
-
         def _done():
-            self._progress.setVisible(False)
             self._model.reload()
-            # Kick off BPM/key analysis + stems pre-analysis for all new tracks
             self._analyse_after_scan()
+            # Notify main window so it can run stems + inspect when ready
+            if callable(getattr(self, 'on_folder_added', None)):
+                self.on_folder_added()
 
-        scan_directory(folder, on_progress=_prog, on_done=_done)
-
-    def _analyse_now(self):
-        """Triggered by Analyse All button — highlights while running, resets when done."""
-        self._btn_analyse.setText("⟳ Analysing…")
-        self._btn_analyse.setEnabled(False)   # :disabled style = green highlight
-        if self._on_analyse_all:
-            self._on_analyse_all(on_complete=self._analyse_done)
-
-    def _analyse_done(self):
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: (
-            self._btn_analyse.setText("⟳ Analyse All"),
-            self._btn_analyse.setEnabled(True),
-        ))
+        scan_directory(folder, on_done=_done)
 
     def _analyse_after_scan(self):
         """After scanning, run BPM/key/grid analysis on new tracks.
@@ -337,6 +316,15 @@ class LibraryWidget(QWidget):
         """Called from MainWindow after construction so we can access deck paths."""
         self._engine = engine
 
+    def _run_inspect_all(self):
+        """Inspect stems for every track in the library."""
+        paths = [t["path"] for t in self._model._rows if t.get("path")]
+        if not paths:
+            QMessageBox.warning(self, "Empty Library", "No tracks in library.")
+            return
+        dlg = StemInspectDialog(paths, parent=self)
+        dlg.exec()
+
     def _run_stems_inspect(self):
         """Run dev_inspect_stems on the tracks currently loaded on decks."""
         engine = getattr(self, "_engine", None)
@@ -359,20 +347,15 @@ class LibraryWidget(QWidget):
         dlg.exec()
 
     def analysis_progress_start(self, total: int):
-        self._progress.setMaximum(total)
-        self._progress.setValue(0)
-        self._progress.setVisible(True)
         self._cpu_label.setVisible(True)
-        _psutil.cpu_percent(interval=None)   # prime the counter
+        _psutil.cpu_percent(interval=None)
         self._cpu_timer.start()
 
     def analysis_progress_update(self, done: int):
-        self._progress.setValue(done)
+        pass
 
     def analysis_progress_done(self):
         self._cpu_timer.stop()
-        self._progress.setVisible(False)
-        self._progress.setValue(0)
         self._cpu_label.setVisible(False)
         self._cpu_label.setText("")
 
@@ -410,11 +393,8 @@ class _InspectWorker(QObject):
             import numpy as np
             import soundfile as sf
             from ..core.stems import STEM_NAMES as _STEM_NAMES
-            try:
-                from stem_analyzer import load_cached_stems, is_cached
-                _has_wav_cache = True
-            except Exception:
-                _has_wav_cache = False
+            from ..core.stems import _cache_path, _load_cache
+            import importlib.util, sys as _sys
 
             sr = 44100
             all_metrics = []
@@ -422,7 +402,6 @@ class _InspectWorker(QObject):
 
             # Import metric helpers from dev_inspect_stems
             # Check bundle root (PyInstaller) then source tree
-            import importlib.util, sys as _sys
             _candidates = [
                 pathlib.Path(getattr(_sys, '_MEIPASS', '')) / "dev_inspect_stems.py",
                 pathlib.Path(__file__).parent.parent.parent / "dev_inspect_stems.py",
@@ -435,14 +414,14 @@ class _InspectWorker(QObject):
             mod  = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
+            skipped = []
             for path in self._paths:
                 name = pathlib.Path(path).stem[:50]
-                stems = None
-                if _has_wav_cache and is_cached(path):
-                    stems = load_cached_stems(path, sr)
+                npz = _cache_path(path)
+                stems = _load_cache(npz, sr) if npz and pathlib.Path(npz).exists() else None
                 if stems is None:
-                    self.error.emit(f"No cached stems for {name}. Load the track and wait for ● STEMS READY first.")
-                    return
+                    skipped.append(name)
+                    continue
 
                 stems.pop("_vocal_present", None)
                 # Keep only the 4 primary stems
@@ -465,7 +444,15 @@ class _InspectWorker(QObject):
                 all_metrics.append(metrics)
                 all_specs.append(spec_png)
 
+            if not all_metrics:
+                self.error.emit("No tracks with cached stems found. Load tracks on decks and wait for ● STEMS READY.")
+                return
             analysis = mod.analyse_with_claude(all_metrics, all_specs)
+            if skipped:
+                note = f"\n\n---\n⚠ Skipped {len(skipped)} track(s) without stems: {', '.join(skipped[:5])}"
+                if len(skipped) > 5:
+                    note += f" +{len(skipped)-5} more"
+                analysis += note
             self.finished.emit(analysis)
 
         except Exception as e:

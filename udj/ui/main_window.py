@@ -48,8 +48,8 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self._midi_status)
         QTimer.singleShot(500, self._check_midi)
 
-        # Analyse unanalysed library tracks in background on startup
-        QTimer.singleShot(1500, self._analyse_library)
+        # Analyse only tracks missing BPM/grid/stems — never overwrite good data
+        QTimer.singleShot(1500, lambda: self._analyse_library(force_all=False))
 
     # ──────────────────────────────────────────────────────────
     #  UI layout
@@ -100,7 +100,6 @@ class MainWindow(QMainWindow):
         self.library = LibraryWidget(
             on_load_deck1=lambda t: self._load_track(0, t),
             on_load_deck2=lambda t: self._load_track(1, t),
-            on_analyse_all=lambda on_complete=None: self._analyse_library(force_all=True, on_complete=on_complete),
         )
         self.library.setMinimumHeight(200)
         root.addWidget(self.library, 1)
@@ -109,6 +108,10 @@ class MainWindow(QMainWindow):
         self.controller.library = self.library
         # Give the library a reference to the engine for stem inspection
         self.library.set_engine(self.engine)
+        # After folder scan: run stems for all new tracks, then auto-inspect
+        self.library.on_folder_added = lambda: self._analyse_library(
+            force_all=False,
+            on_complete=self.library._run_inspect_all)
         # Allow mixer widget to read controller state (transition FX sync)
         self.engine._controller_ref = self.controller
         # Sync pad mode display when hardware cycles modes
@@ -284,14 +287,7 @@ class MainWindow(QMainWindow):
                         on_complete()
                 QTimer.singleShot(0, _finish)
             else:
-                n = done[0]
-                def _upd(n=n):
-                    try:
-                        self.library._btn_analyse.setText(f"⟳  {n} / {total}")
-                        self.library.analysis_progress_update(n)
-                    except Exception:
-                        pass
-                QTimer.singleShot(0, _upd)
+                QTimer.singleShot(0, self.library._model.reload)
 
         for t in todo_analysis:
             analyse_track(t["path"], on_done=_on_analysis, force=True)

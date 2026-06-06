@@ -68,13 +68,19 @@ def _detect_beats(y: np.ndarray, sr: int) -> tuple[float, float, list]:
         fmax=8000,                # focus on kick/snare frequencies
     )
 
-    # Autocorrelation BPM estimate
+    # Autocorrelation BPM — biased toward 130 BPM so half-tempo (65 BPM) loses
     bpm_ac = float(np.median(librosa.beat.tempo(
-        onset_envelope=onset_env, sr=sr, hop_length=hop, aggregate=None)))
+        onset_envelope=onset_env, sr=sr, hop_length=hop,
+        start_bpm=130, aggregate=None)))
 
-    # Candidate scoring (×0.5, ×1, ×2) — anti-octave-error heuristic
+    # Candidates × 0.5 / 1 / 2 — only keep those in the DJ range 110–185 BPM.
+    # Filtering here eliminates 69.8 BPM (half of 139.6) before scoring starts.
     candidates = {round(bpm_ac * m, 2) for m in (0.5, 1.0, 2.0)
-                  if 60.0 <= bpm_ac * m <= 220.0} or {round(bpm_ac, 2)}
+                  if 110.0 <= bpm_ac * m <= 185.0}
+    if not candidates:
+        # Fallback: expand range if nothing lands in 110–185
+        candidates = {round(bpm_ac * m, 2) for m in (0.5, 1.0, 2.0)
+                      if 60.0 <= bpm_ac * m <= 220.0} or {round(bpm_ac, 2)}
 
     def _score(bpm: float) -> float:
         period = sr * 60.0 / (bpm * hop)
@@ -85,8 +91,7 @@ def _detect_beats(y: np.ndarray, sr: int) -> tuple[float, float, list]:
 
     scored   = sorted(((b, _score(b)) for b in candidates),
                       key=lambda x: x[1], reverse=True)
-    dj       = [(b, s) for b, s in scored if 80 <= b <= 185]
-    best_bpm = dj[0][0] if dj else scored[0][0]
+    best_bpm = scored[0][0]
 
     # Re-run beat tracker locked to best_bpm so positions match the winning tempo
     _, beat_frames = librosa.beat.beat_track(
