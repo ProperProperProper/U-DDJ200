@@ -132,27 +132,31 @@ class Deck:
         self.on_hot_cue_changed:    Optional[Callable] = None
         self.on_stems_ready:        Optional[Callable] = None
 
-        # Anti-aliasing filter state — low-pass applied before interpolation
-        # when rate > 1 (pitch-up compresses content toward Nyquist).
-        # Filter is rebuilt lazily when rate changes significantly.
-        self._aa_rate: float = 1.0          # rate the current filter was built for
-        self._aa_sos:  Optional[np.ndarray] = None
+        # Anti-aliasing filter — precomputed lookup table, safe to call in callback.
+        # butter() must NEVER run inside the audio callback; build all buckets at init.
+        # Buckets: rate 1.05 → 2.50 in steps of 0.05 (30 entries, <10ms total at init).
+        self._aa_table: dict[float, np.ndarray] = {}
+        nyq = sample_rate / 2.0
+        for _r100 in range(105, 255, 5):   # 1.05 … 2.50
+            _r   = _r100 / 100.0
+            _cut = min(1.0 / _r, 0.95)    # normalised cutoff
+            self._aa_table[_r] = butter(8, _cut, btype='low', output='sos')
+        self._aa_bucket: float = 0.0       # last bucket used
         self._aa_zi_L: Optional[np.ndarray] = None
         self._aa_zi_R: Optional[np.ndarray] = None
 
     def _get_aa_sos(self, rate: float):
-        """Return (sos, zi_L, zi_R) anti-alias LP filter for given playback rate.
-        Cutoff = Nyquist / rate so upward-pitched content can't fold back.
-        Only rebuilt when rate changes by more than 1%."""
-        if (self._aa_sos is None or abs(rate - self._aa_rate) > 0.01 * self._aa_rate):
-            nyq    = self.sample_rate / 2.0
-            cutoff = min(nyq / rate, nyq * 0.95) / nyq   # normalised, capped at 0.95
-            sos    = butter(8, cutoff, btype='low', output='sos')
-            self._aa_sos  = sos
+        """Return (sos, zi_L, zi_R) for the nearest pre-built bucket.
+        No scipy calls here — safe to invoke from the audio callback."""
+        # Round to nearest 0.05 bucket, clamped to table range
+        bucket = round(min(max(rate, 1.05), 2.50) / 0.05) * 0.05
+        bucket = round(bucket, 2)
+        sos = self._aa_table.get(bucket) or next(iter(self._aa_table.values()))
+        if bucket != self._aa_bucket or self._aa_zi_L is None:
             self._aa_zi_L = np.zeros((sos.shape[0], 2), dtype=np.float64)
             self._aa_zi_R = np.zeros((sos.shape[0], 2), dtype=np.float64)
-            self._aa_rate = rate
-        return self._aa_sos, self._aa_zi_L, self._aa_zi_R
+            self._aa_bucket = bucket
+        return sos, self._aa_zi_L, self._aa_zi_R
 
     def _reset_stem_state(self):
         """Reset all stem playback state — called on init and on each new track load."""
