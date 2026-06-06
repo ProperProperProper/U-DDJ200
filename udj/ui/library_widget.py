@@ -432,11 +432,6 @@ class _InspectWorker(QObject):
                 all_metrics.append(metrics)
                 all_specs.append(spec_png)
             analysis = mod.analyse_with_claude(all_metrics, all_specs)
-            if skipped:
-                note = f"\n\n---\n⚠ Skipped {len(skipped)} track(s) without stems: {', '.join(skipped[:5])}"
-                if len(skipped) > 5:
-                    note += f" +{len(skipped)-5} more"
-                analysis += note
             self.finished.emit(analysis)
 
         except Exception as e:
