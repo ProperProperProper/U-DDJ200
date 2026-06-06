@@ -288,34 +288,12 @@ def auto_fix_stems(stems: dict, metrics: dict, sr: int) -> dict:
             fixed["vocals"] = _hp(fixed["vocals"], 200, order=4)
 
     # ── Cross-contamination corrections ───────────────────────────────────────
+    # drums→vocals: high correlation on dance/vocal tracks is rhythmic co-occurrence,
+    # not acoustic bleed. Spectral subtraction consistently makes it worse.
+    # Only attempt a mild hat-shelf cut when correlation is moderate (0.35–0.55).
     drm_voc = cc.get("drums leaking into vocals", 0.0)
-    if drm_voc >= _CONTAMINATION_WARN and "drums" in fixed and "vocals" in fixed:
-        # Multi-band spectral subtraction: snare (1-4kHz) and hat (4kHz+) bands separately.
-        # Scaled by how much the drums RMS envelope exceeds the vocals RMS envelope
-        # at each moment — only subtracts when drums are louder than vocals.
-        from scipy.signal import sosfilt, butter
-        voc64 = fixed["vocals"].astype(np.float64)
-        drm64 = fixed["drums"].astype(np.float64)
-
-        for band_lo, band_hi, alpha_base in [
-            (1000, 4000, 0.5),   # snare body
-            (4000, 16000, 0.7),  # hats / cymbals
-        ]:
-            sos_hp = butter(6, min(band_lo  / nyq, 0.99), "high", output="sos")
-            sos_lp = butter(6, min(band_hi  / nyq, 0.99), "low",  output="sos")
-            alpha  = min(alpha_base + (drm_voc - _CONTAMINATION_WARN) * 0.4, 0.88)
-            for ch in range(2):
-                voc_band = sosfilt(sos_lp, sosfilt(sos_hp, voc64[:, ch]))
-                drm_band = sosfilt(sos_lp, sosfilt(sos_hp, drm64[:, ch]))
-                # Only subtract where drums are actually louder (genuine bleed)
-                subtract = alpha * drm_band
-                corrected = voc_band - subtract
-                # Soft floor: never reduce below 15% of original band
-                corrected = np.where(np.abs(corrected) < np.abs(voc_band) * 0.15,
-                                     voc_band * 0.15, corrected)
-                voc64[:, ch] += corrected - voc_band   # replace band in-place
-
-        fixed["vocals"] = voc64.astype(np.float32)
+    if _CONTAMINATION_WARN <= drm_voc < 0.55 and "vocals" in fixed:
+        fixed["vocals"] = _shelve_db(fixed["vocals"], 10000, -2.0, "high")
 
     bas_oth = cc.get("bass leaking into synths", 0.0)
     if bas_oth >= _CONTAMINATION_WARN and "other" in fixed:
@@ -339,7 +317,7 @@ _LEVEL_HOT_DB        = -3.0   # stem dominating mix unusually
 _STEM_EXPECTED_BANDS = {
     # name: {band: (min_ratio, max_ratio)}  — expected energy distribution
     "drums":  {"sub_20_80hz": (0.02, 0.30), "hi_4k_16k": (0.05, 0.50)},
-    "bass":   {"sub_20_80hz": (0.05, 0.60), "hi_4k_16k": (0.0,  0.10)},
+    "bass":   {"sub_20_80hz": (0.05, 0.78), "hi_4k_16k": (0.0,  0.10)},
     "other":  {"sub_20_80hz": (0.0,  0.08), "mid_1k_4k": (0.05, 0.60)},
     "vocals": {"sub_20_80hz": (0.0,  0.06), "mid_1k_4k": (0.05, 0.70)},
 }
@@ -419,13 +397,18 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
         lines.append("CROSS-CONTAMINATION  (0=clean, 1=identical)")
         lines.append("─" * 40)
         for label, score in contam.items():
-            # drums→synths high correlation on dance music is rhythmic, not bleed
-            if label == "drums leaking into synths" and score >= 0.7:
+            # drums→synths and drums→vocals: high scores on dance music are rhythmic
+            # co-occurrence (synths/vocals on every beat), not acoustic bleed
+            _rhythmic = (
+                (label == "drums leaking into synths" and score >= 0.7) or
+                (label == "drums leaking into vocals" and score >= 0.55)
+            )
+            if _rhythmic:
                 flag = "  ~ RHYTHMIC"
             else:
                 flag = _flag(score, _CONTAMINATION_WARN, _CONTAMINATION_BAD)
             lines.append(f"  {label:<35s} {score:.3f}{flag}")
-            if score >= _CONTAMINATION_WARN:
+            if score >= _CONTAMINATION_WARN and not _rhythmic:
                 src, tgt = label.split(" leaking into ")
                 if src == "bass" and tgt == "other":
                     recommendations.append(
@@ -434,12 +417,8 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
                     recommendations.append(
                         f"  BASS: add de-drum notch 55–80 Hz — kick transients leaking (corr={score:.2f})")
                 elif src == "drums" and tgt == "other":
-                    if score >= 0.7:
-                        recommendations.append(
-                            f"  OTHER: {score:.2f} likely rhythmic correlation (synths on beat) — not fixable by DSP")
-                    else:
-                        recommendations.append(
-                            f"  OTHER: lower transient suppressor threshold — drum hits in synths (corr={score:.2f})")
+                    recommendations.append(
+                        f"  OTHER: lower transient suppressor threshold — drum hits in synths (corr={score:.2f})")
                 elif src == "drums" and tgt == "vocals":
                     recommendations.append(
                         f"  VOCALS: spectral subtraction alpha → higher — hats leaking (corr={score:.2f})")
@@ -450,12 +429,15 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
         lines.append("")
 
         # ── Summary ───────────────────────────────────────────────────────────
+        def _is_rhythmic(lbl: str, s: float) -> bool:
+            return (
+                (lbl == "drums leaking into synths" and s >= 0.7) or
+                (lbl == "drums leaking into vocals" and s >= 0.55)
+            )
         n_bad  = sum(1 for lbl, s in contam.items()
-                     if s >= _CONTAMINATION_BAD
-                     and not (lbl == "drums leaking into synths" and s >= 0.7))
+                     if s >= _CONTAMINATION_BAD and not _is_rhythmic(lbl, s))
         n_warn = sum(1 for lbl, s in contam.items()
-                     if _CONTAMINATION_WARN <= s < _CONTAMINATION_BAD
-                     and not (lbl == "drums leaking into synths" and s >= 0.7))
+                     if _CONTAMINATION_WARN <= s < _CONTAMINATION_BAD and not _is_rhythmic(lbl, s))
         n_findings = len(findings)
 
         lines.append("SUMMARY")

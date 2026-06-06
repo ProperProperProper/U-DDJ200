@@ -151,7 +151,7 @@ U-DJ uses **htdemucs_ft** (demucs ML model, Apple Silicon MPS accelerated) to se
 | **DRM** | Kick, snare, hats | HP 30Hz (preserves kick body), transient boost, hat air +3dB >10kHz |
 | **SYNTH** | Synths, pads, leads | 8th-order HP 120Hz (kills bass bleed), presence +2dB |
 
-**Drum bleed removed from vocals** via spectral subtraction (hi-hats above 3kHz). **Transient suppressor** on synth stem kills leaked drum hits.
+Post-separation: **Wiener soft-mask refinement** (STFT 4096/hop 1024) sharpens TF-bin separation. Adaptive vocal gate at 30th percentile. Drum bleed from hats (moderate correlation only) removed via mild shelf cut. High drums→synths / drums→vocals correlation on dance tracks is rhythmic co-occurrence — no DSP applied.
 
 **First separation:** ~90 seconds on Apple Silicon M-series  
 **Subsequent loads:** instant from cache (`~/udj_cache/`)
@@ -204,11 +204,11 @@ Centre = bypass on all effects.
 
 ---
 
-## 🔬 Stem Inspection Tool (dev)
+## 🔬 Stem Inspection Tool
 
-Load tracks on the decks, then click **🔬 Inspect Stems** in the library toolbar. Requires stems to be cached (● green dot). Sends spectrogram images and waveform metrics to Claude Sonnet, which analyses stem separation quality and recommends post-processing improvements for your tracks.
+Select tracks in the library, then click **🔬 Inspect Stems** in the toolbar. No deck load required — stems are separated and cached automatically on first inspect.
 
-Requires `ANTHROPIC_API_KEY` in your environment.
+The inspector runs fully local DSP analysis: band energy ratios, cross-contamination correlation, adaptive auto-fix (HP filters, shelf cuts, Wiener soft-mask refinement), and logs results to `~/.udj/library.db`. High drums→synths and drums→vocals correlation on dance music is identified as rhythmic co-occurrence (`~ RHYTHMIC`) rather than acoustic bleed, so no unnecessary DSP is applied.
 
 ---
 
@@ -305,8 +305,7 @@ open ~/Desktop/U-DJ.app
 
 ### 8. Dev tools
 
-**Stem inspection** (analyses separation quality with Claude):
+**Stem inspection** (local DSP analysis, no API key required):
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 python3 dev_inspect_stems.py track1.wav track2.wav
 ```
