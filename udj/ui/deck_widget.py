@@ -95,12 +95,12 @@ class PadWidget(QWidget):
         # ── case / housing (bevelled outer frame) ─────────────────────────────
         from PyQt6.QtGui import QConicalGradient
         case_cg = QConicalGradient(W / 2, H / 2, 45)
-        case_cg.setColorAt(0.00, QColor("#252530"))
-        case_cg.setColorAt(0.15, QColor("#2e2e3a"))
-        case_cg.setColorAt(0.35, QColor("#18181e"))
-        case_cg.setColorAt(0.55, QColor("#0e0e12"))
-        case_cg.setColorAt(0.75, QColor("#16161c"))
-        case_cg.setColorAt(1.00, QColor("#252530"))
+        case_cg.setColorAt(0.00, QColor("#343444"))
+        case_cg.setColorAt(0.15, QColor("#3c3c4e"))
+        case_cg.setColorAt(0.35, QColor("#22222e"))
+        case_cg.setColorAt(0.55, QColor("#141420"))
+        case_cg.setColorAt(0.75, QColor("#1e1e2a"))
+        case_cg.setColorAt(1.00, QColor("#343444"))
         qp.setPen(Qt.PenStyle.NoPen)
         qp.setBrush(case_cg)
         qp.drawRoundedRect(0, 0, W, H, R, R)
@@ -140,26 +140,36 @@ class PadWidget(QWidget):
                                W - M * 2 - 1.5, H - M * 2 - 1.5, Ri, Ri)
 
         else:
-            # Unlit: dark gradient with slight concave depth
+            # Unlit: clearly visible dark body — noticeably lighter than background
             body = QLinearGradient(0, M, 0, H - M)
-            body.setColorAt(0.0, QColor("#1d1d24" if not down else "#141418"))
-            body.setColorAt(0.5, QColor("#131318" if not down else "#0e0e12"))
-            body.setColorAt(1.0, QColor("#0e0e12" if not down else "#0a0a0e"))
+            if not down:
+                body.setColorAt(0.0, QColor("#2c2c38"))
+                body.setColorAt(0.5, QColor("#222230"))
+                body.setColorAt(1.0, QColor("#1a1a24"))
+            else:
+                body.setColorAt(0.0, QColor("#181820"))
+                body.setColorAt(1.0, QColor("#101018"))
             qp.setPen(Qt.PenStyle.NoPen)
             qp.setBrush(body)
             qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
 
-            # inner vignette
+            # inner vignette — slight concave depth
             vig = QRadialGradient(W / 2, H / 2, max(W, H) * 0.55)
-            vig.setColorAt(0.0, QColor(255, 255, 255, 5))
+            vig.setColorAt(0.0, QColor(255, 255, 255, 6))
             vig.setColorAt(0.6, QColor(0, 0, 0, 0))
-            vig.setColorAt(1.0, QColor(0, 0, 0, 28))
+            vig.setColorAt(1.0, QColor(0, 0, 0, 35))
             qp.setBrush(vig)
             qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
 
+            # very dim accent tint on border — shows which colour this pad will be
+            qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(), 35), 1.0))
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.drawRoundedRect(M + 0.5, M + 0.5,
+                               W - M * 2 - 1.0, H - M * 2 - 1.0, Ri, Ri)
+
         # ── surface sheen — specular top-left highlight (always) ──────────────
-        sheen_alpha = 28 if lit else 18
-        sh = QLinearGradient(M, M, M, H * 0.45)
+        sheen_alpha = 30 if lit else 22
+        sh = QLinearGradient(M, M, M, H * 0.42)
         sh.setColorAt(0.0, QColor(255, 255, 255, sheen_alpha))
         sh.setColorAt(1.0, QColor(255, 255, 255, 0))
         qp.setPen(Qt.PenStyle.NoPen)
@@ -171,21 +181,26 @@ class PadWidget(QWidget):
         bv_y_bot = H - M - 0.8
         bv_x0    = M + Ri
         bv_x1    = W - M - Ri
-        qp.setPen(QPen(QColor(255, 255, 255, 18 if (lit and not down) else 10), 1.0))
+        qp.setPen(QPen(QColor(255, 255, 255, 22 if not down else 8), 1.0))
         qp.drawLine(QPointF(bv_x0, bv_y_top), QPointF(bv_x1, bv_y_top))
-        qp.setPen(QPen(QColor(0, 0, 0, 60 if not down else 30), 1.0))
+        qp.setPen(QPen(QColor(0, 0, 0, 70 if not down else 30), 1.0))
         qp.drawLine(QPointF(bv_x0, bv_y_bot), QPointF(bv_x1, bv_y_bot))
 
         # ── label ─────────────────────────────────────────────────────────────
         font = QFont()
         font.setPixelSize(9)
         font.setBold(True)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.5)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
         qp.setFont(font)
         if lit:
-            text_col = QColor(255, 255, 255, 230)
+            text_col = QColor(255, 255, 255, 235)
         else:
-            text_col = QColor(60, 60, 80, 255)
+            # clearly readable in unlit state — match the dim accent tint
+            text_col = QColor(
+                ac.red()   // 2 + 50,
+                ac.green() // 2 + 50,
+                ac.blue()  // 2 + 60,
+                200)
         qp.setPen(text_col)
         qp.drawText(QRectF(M, M, W - M * 2, H - M * 2),
                     Qt.AlignmentFlag.AlignCenter, self._label)
