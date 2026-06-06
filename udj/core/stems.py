@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v12"  # v12: 4-stem only (Serato model) — removed DSP guitar/piano split
+STEMS_VERSION = "v13"  # v13: Wiener filter refinement + adaptive vocal gate
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -271,6 +271,9 @@ def _separate_demucs(file_path: str, target_sr: int,
     else:
         print("[Stems] Roformer unavailable — using demucs vocals")
 
+    # Wiener soft-mask refinement — reduce inter-stem bleed before DSP
+    raw_stems = _wiener_refine(raw_stems, target_sr)
+
     # Post-process each stem with techno-tuned DSP chain
     processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
 
@@ -279,6 +282,74 @@ def _separate_demucs(file_path: str, target_sr: int,
         raw_stems.get("vocals", np.zeros((1024, 2), dtype=np.float32)), orig)
 
     return processed
+
+
+# ─── Wiener soft-mask refinement ─────────────────────────────────────────────
+
+def _wiener_refine(stems: dict[str, np.ndarray], sr: int,
+                   exponent: float = 2.0) -> dict[str, np.ndarray]:
+    """
+    Wiener filter post-processing on raw demucs output.
+
+    For each time-frequency bin, each stem's gain is:
+        mask_i = P_i^exponent / (sum_j P_j^exponent + eps)
+
+    where P_i is the power spectrogram of stem i.  exponent=2 gives a
+    classical Wiener filter (minimises mean-squared error).  Higher values
+    (e.g. 3–4) act as a soft binary mask — more aggressive separation at
+    the cost of more musical artifacts.  2.0 is the safe default.
+
+    Applied per channel.  Uses STFT frame size 4096/hop 1024 (~23ms@44100)
+    which balances frequency resolution vs. temporal smearing.
+    """
+    import numpy.fft as fft
+
+    n_fft  = 4096
+    hop    = 1024
+    window = np.hanning(n_fft).astype(np.float64)
+    eps    = 1e-10
+
+    stem_names = [k for k in stems if isinstance(stems[k], np.ndarray)]
+    n_samples  = min(len(stems[k]) for k in stem_names)
+
+    def _stft(sig: np.ndarray):
+        frames = []
+        for start in range(0, n_samples - n_fft, hop):
+            frames.append(fft.rfft(sig[start:start + n_fft] * window))
+        return np.array(frames)   # (T, F)
+
+    def _istft(frames: np.ndarray, orig_len: int) -> np.ndarray:
+        out = np.zeros(orig_len, dtype=np.float64)
+        norm = np.zeros(orig_len, dtype=np.float64)
+        for t, frame in enumerate(frames):
+            start = t * hop
+            end   = min(start + n_fft, orig_len)
+            chunk = np.real(fft.irfft(frame))[:end - start]
+            out[start:end]  += chunk * window[:end - start]
+            norm[start:end] += window[:end - start] ** 2
+        norm = np.where(norm > eps, norm, 1.0)
+        return out / norm
+
+    result = {}
+    for ch in range(2):
+        # STFT for each stem on this channel
+        specs = {name: _stft(stems[name][:n_samples, ch].astype(np.float64))
+                 for name in stem_names}
+        power = {name: np.abs(specs[name]) ** 2 for name in stem_names}
+
+        # Sum of all stems' power (denominator)
+        total_power = sum(power.values()) + eps
+
+        for name in stem_names:
+            mask = (power[name] ** exponent) / (total_power ** exponent + eps)
+            masked_spec = specs[name] * mask
+            refined = _istft(masked_spec, n_samples)
+            if name not in result:
+                result[name] = np.zeros((n_samples, 2), dtype=np.float32)
+            result[name][:, ch] = refined.astype(np.float32)
+
+    print(f"[Stems] Wiener refinement done (exponent={exponent})")
+    return result
 
 
 # ─── per-stem post-processing ─────────────────────────────────────────────────
@@ -555,15 +626,25 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64[:, 0] += pres_L * (10.0 ** (3.0 / 20.0) - 1.0)
     audio64[:, 1] += pres_R * (10.0 ** (3.0 / 20.0) - 1.0)
 
-    # 4. Gate at −20 dBFS, 3ms attack / 10ms release — more aggressive for short stabs
-    gate_threshold = 10.0 ** (-20.0 / 20.0)
-    window = max(1, int(sr * 0.003))   # 3ms RMS window
+    # 4. Adaptive gate — threshold derived from signal's own RMS distribution.
+    #    Compute RMS in 10ms frames, sort them, set threshold at the 30th percentile
+    #    of non-silent frames.  This gates out residual bleed at the noise floor
+    #    while never over-gating loud stabs regardless of the track's level.
+    frame_len = max(1, sr // 100)   # 10ms frames
+    frames = [audio64[i:i + frame_len, 0] for i in range(0, len(audio64) - frame_len, frame_len)]
+    frame_rms = np.array([np.sqrt(np.mean(f ** 2) + 1e-12) for f in frames])
+    active = frame_rms[frame_rms > 1e-6]
+    if len(active) > 10:
+        gate_threshold = float(np.percentile(active, 30))
+    else:
+        gate_threshold = 10.0 ** (-20.0 / 20.0)   # fallback
+
+    win_len = max(1, int(sr * 0.003))
     rms_env = np.sqrt(np.convolve(audio64[:, 0] ** 2,
-                                  np.ones(window) / window, mode="same"))
-    atk = 1.0 - np.exp(-1.0 / max(sr * 0.003, 1.0))   # 3ms attack
-    rel = 1.0 - np.exp(-1.0 / max(sr * 0.010, 1.0))   # 10ms release
+                                  np.ones(win_len) / win_len, mode="same"))
+    atk = 1.0 - np.exp(-1.0 / max(sr * 0.003, 1.0))
+    rel = 1.0 - np.exp(-1.0 / max(sr * 0.010, 1.0))
     gate_raw = (rms_env > gate_threshold).astype(np.float64)
-    # Asymmetric gate: fast attack, faster-than-old release
     gate = np.zeros_like(gate_raw)
     g = 0.0
     for i, target in enumerate(gate_raw):

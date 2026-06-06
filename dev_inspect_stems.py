@@ -211,97 +211,154 @@ def make_spectrogram(stems: dict, sr: int, track_name: str) -> bytes:
     return buf.read()
 
 
-# ── Claude analysis ───────────────────────────────────────────────────────────
+# ── Local DSP analysis ────────────────────────────────────────────────────────
 
-SYSTEM = """You are a senior audio DSP engineer specialising in electronic music stem separation — techno, Detroit techno, house, trance, dance.
+# Thresholds derived from htdemucs_ft expected output on electronic music
+_CONTAMINATION_WARN  = 0.35   # bleed correlation above this = problem
+_CONTAMINATION_BAD   = 0.55
+_LEVEL_SILENT_DB     = -30.0  # stem probably empty / over-gated
+_LEVEL_HOT_DB        = -3.0   # stem dominating mix unusually
 
-You are reviewing demucs htdemucs_ft output for a DJ application. Your job is to:
-1. Identify specific problems visible in the spectrograms and metrics
-2. Diagnose root causes (bleed, over-processing, gate artifacts, etc.)
-3. Recommend exact parameter changes to the Python post-processing code in stems.py
+_STEM_EXPECTED_BANDS = {
+    # name: {band: (min_ratio, max_ratio)}  — expected energy distribution
+    "drums":  {"sub_20_80hz": (0.02, 0.30), "hi_4k_16k": (0.05, 0.50)},
+    "bass":   {"sub_20_80hz": (0.05, 0.60), "hi_4k_16k": (0.0,  0.10)},
+    "other":  {"sub_20_80hz": (0.0,  0.08), "mid_1k_4k": (0.05, 0.60)},
+    "vocals": {"sub_20_80hz": (0.0,  0.06), "mid_1k_4k": (0.05, 0.70)},
+}
 
-The post-processing parameters you can recommend changes to:
-
-DRUMS:
-  hp_hz (currently 30) — HP cutoff to remove rumble, keep kick sub-body
-  sub_kick_boost_hz_lo/hi (55/105) — sub-kick boost band
-  sub_kick_boost_db (currently 2.0)
-  de_mud_hz_lo/hi (180/520) — de-mud notch band
-  de_mud_db (currently -5.0)
-  hat_air_hz (10000) — hat shelf frequency
-  hat_air_db (currently 3.0)
-  transient_attack_ms (0.8)
-  transient_boost (1.3 + energy×0.45)
-
-BASS:
-  lp_hz (currently 1200) — high-cut, keeps 303 acid squeal
-  sub_boost_hz (20-60) — sub boost band
-  sub_boost_db (currently 3.0)
-  mono_below_hz (120)
-
-OTHER/SYNTHS:
-  hp_hz (currently 120) — high-pass to strip bass bleed
-  hp_order (currently 8) — filter steepness
-  presence_hz_lo/hi (2000/6000)
-  presence_db (currently 2.0)
-  air_hz (12000)
-  air_db (currently 1.5)
-
-VOCALS (techno = short samples, stabs):
-  hp_hz (currently 100)
-  lp_hz (currently 10000)
-  gate_threshold_dbfs (currently -24)
-  gate_attack_ms (5)
-  gate_release_ms (15)
-  presence_hz_lo/hi (1500/4000)
-  presence_db (currently 3.0)
-
-Be specific. Reference what you see in the spectrogram. Give exact numbers.
-Format your response as:
-
-## Findings
-[What you see wrong, stem by stem]
-
-## Root Causes
-[Why each problem is happening]
-
-## Recommended Code Changes
-[Exact parameter values to change in stems.py, with reasoning]"""
+_STEMS_PARAMS = {
+    "drums":  {"hp_hz": 30, "sub_kick_boost_db": 2.0, "de_mud_db": -5.0,
+               "hat_air_db": 3.0, "transient_boost": "1.3 + energy×0.45"},
+    "bass":   {"lp_hz": 1200, "sub_boost_db": 3.0, "mono_below_hz": 120},
+    "other":  {"hp_hz": 120, "hp_order": 8, "presence_db": 2.0, "air_db": 1.5},
+    "vocals": {"hp_hz": 100, "lp_hz": 10000, "gate_threshold_dbfs": -24,
+               "presence_db": 3.0},
+}
 
 
-def analyse_with_claude(all_metrics: list[dict], all_specs: list[bytes]) -> str:
-    import anthropic
+def _flag(score: float, warn: float, bad: float) -> str:
+    if score >= bad:  return "  ✖ BAD"
+    if score >= warn: return "  ⚠ WARN"
+    return "  ✔"
 
-    client = anthropic.Anthropic()
 
-    content = []
-    for i, (metrics, spec_png) in enumerate(zip(all_metrics, all_specs)):
-        content.append({
-            "type": "text",
-            "text": f"### Track {i+1}: {metrics['track']}\nMetrics:\n```json\n{json.dumps(metrics, indent=2)}\n```"
-        })
-        content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.standard_b64encode(spec_png).decode(),
-            }
-        })
+def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
+    lines = []
 
-    content.append({
-        "type": "text",
-        "text": f"Analysed {len(all_metrics)} track(s). Genre: techno/house/dance/trance. Identify issues and give exact parameter recommendations for stems.py."
-    })
+    for metrics in all_metrics:
+        track  = metrics["track"]
+        stems  = metrics["stems"]
+        contam = metrics["cross_contamination_0_to_1"]
 
-    print("\n  Sending to Claude for analysis...")
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": content}],
-    )
-    return response.content[0].text
+        lines.append(f"{'═'*60}")
+        lines.append(f"TRACK: {track}")
+        lines.append("")
+
+        # ── Per-stem level & frequency analysis ──────────────────────────────
+        lines.append("STEM LEVELS & FREQUENCY CONTENT")
+        lines.append("─" * 40)
+        findings = []
+        recommendations = []
+
+        for stem_name, m in stems.items():
+            lvl = m["level_db_vs_original"]
+            status = ""
+            if lvl < _LEVEL_SILENT_DB:
+                status = f"  ✖ SILENT ({lvl:+.1f} dB) — possible over-gating or failed separation"
+                if stem_name == "vocals":
+                    recommendations.append(f"  VOCALS: gate_threshold_dbfs → -30 or lower (currently -24)")
+            elif lvl > _LEVEL_HOT_DB:
+                status = f"  ⚠ HOT ({lvl:+.1f} dB) — bleed inflating level"
+            else:
+                status = f"  ✔ {lvl:+.1f} dB"
+
+            lines.append(f"  {stem_name.upper():8s} {status}")
+
+            expected = _STEM_EXPECTED_BANDS.get(stem_name, {})
+            for band, (lo, hi) in expected.items():
+                val = m.get(band, 0.0)
+                if val > hi:
+                    issue = f"    {band}: {val:.3f} — TOO HIGH (expected ≤{hi:.2f})"
+                    findings.append(f"{stem_name.upper()} {issue}")
+                    if stem_name == "bass" and band == "hi_4k_16k":
+                        recommendations.append(f"  BASS: lp_hz → 800–1000 (currently 1200) — high bleed in bass stem")
+                    elif stem_name == "other" and band == "sub_20_80hz":
+                        recommendations.append(f"  OTHER: hp_hz → 140–160 (currently 120) — sub leaking into synths")
+                    elif stem_name == "drums" and band == "sub_20_80hz" and val > 0.35:
+                        recommendations.append(f"  DRUMS: hp_hz → 40–50 (currently 30) — too much sub in drums")
+                elif val < lo and lo > 0.0:
+                    issue = f"    {band}: {val:.3f} — LOW (expected ≥{lo:.2f})"
+                    findings.append(f"{stem_name.upper()} {issue}")
+                    if stem_name == "drums" and band == "hi_4k_16k":
+                        recommendations.append(f"  DRUMS: hat_air_db → 4.5–6.0 (currently 3.0) — hats lacking air")
+                    elif stem_name == "bass" and band == "sub_20_80hz":
+                        recommendations.append(f"  BASS: sub_boost_db → 4.5–6.0 (currently 3.0) — sub weak")
+
+        lines.append("")
+
+        # ── Cross-contamination ───────────────────────────────────────────────
+        lines.append("CROSS-CONTAMINATION  (0=clean, 1=identical)")
+        lines.append("─" * 40)
+        for label, score in contam.items():
+            flag = _flag(score, _CONTAMINATION_WARN, _CONTAMINATION_BAD)
+            lines.append(f"  {label:<35s} {score:.3f}{flag}")
+            if score >= _CONTAMINATION_WARN:
+                src, tgt = label.split(" leaking into ")
+                if src == "bass" and tgt == "other":
+                    recommendations.append(
+                        f"  OTHER: hp_order → 10–12 (currently 8) — bass still bleeding into synths (corr={score:.2f})")
+                elif src == "drums" and tgt == "bass":
+                    recommendations.append(
+                        f"  BASS: add de-drum notch 55–80 Hz or raise hp_hz — kick transients leaking (corr={score:.2f})")
+                elif src == "drums" and tgt == "other":
+                    recommendations.append(
+                        f"  OTHER: transient suppressor threshold → lower — drum hits leaking into synths (corr={score:.2f})")
+                elif src == "drums" and tgt == "vocals":
+                    recommendations.append(
+                        f"  VOCALS: gate_threshold_dbfs → -20 (currently -24) — hats leaking (corr={score:.2f})")
+                elif src == "bass" and tgt == "vocals":
+                    recommendations.append(
+                        f"  VOCALS: hp_hz → 150–200 (currently 100) — bass leaking into vocals (corr={score:.2f})")
+
+        lines.append("")
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        n_bad  = sum(1 for s in contam.values() if s >= _CONTAMINATION_BAD)
+        n_warn = sum(1 for s in contam.values() if _CONTAMINATION_WARN <= s < _CONTAMINATION_BAD)
+        n_findings = len(findings)
+
+        lines.append("SUMMARY")
+        lines.append("─" * 40)
+        if n_bad == 0 and n_warn == 0 and n_findings == 0:
+            lines.append("  ✔ Stems look clean — no significant bleed or frequency anomalies detected.")
+        else:
+            lines.append(f"  {n_bad} critical bleed(s),  {n_warn} warning(s),  {n_findings} frequency anomal(ies)")
+
+        if findings:
+            lines.append("")
+            lines.append("FREQUENCY ANOMALIES")
+            lines.append("─" * 40)
+            for f in findings:
+                lines.append(f"  {f}")
+
+        if recommendations:
+            lines.append("")
+            lines.append("RECOMMENDED PARAMETER CHANGES (stems.py)")
+            lines.append("─" * 40)
+            for r in sorted(set(recommendations)):
+                lines.append(r)
+        else:
+            lines.append("")
+            lines.append("No parameter changes needed.")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# Keep old name as alias so the worker in library_widget.py needs no change
+analyse_with_claude = analyse_stems
 
 
 # ── Apply changes to stems.py ─────────────────────────────────────────────────

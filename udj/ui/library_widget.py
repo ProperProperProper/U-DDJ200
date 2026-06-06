@@ -448,7 +448,7 @@ class StemInspectDialog(QDialog):
 
     def __init__(self, decks, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔬 Stem Inspection — Claude Analysis")
+        self.setWindowTitle("🔬 Stem Inspection")
         self.setMinimumSize(820, 600)
         self.setStyleSheet(
             "background:#0a0a14;color:#ccc;"
@@ -457,8 +457,6 @@ class StemInspectDialog(QDialog):
             "QPushButton{background:#1a1a2a;border:1px solid #3a3a55;color:#aaa;"
             "border-radius:4px;padding:4px 14px;font-size:11px;font-weight:bold;}"
             "QPushButton:hover{background:#2a2a3a;color:#fff;}"
-            "QPushButton#ApplyBtn{border-color:#aa66ff;color:#cc99ff;}"
-            "QPushButton#ApplyBtn:hover{background:#2a1a3a;}"
         )
         self._analysis = ""
 
@@ -474,25 +472,16 @@ class StemInspectDialog(QDialog):
 
         self._text = QTextEdit()
         self._text.setReadOnly(True)
-        self._text.setPlaceholderText(
-            "Computing metrics and spectrograms…\n"
-            "Sending to Claude claude-sonnet-4-6 for analysis…\n\n"
-            "(stems must be ● READY on both decks)")
+        self._text.setPlaceholderText("Computing metrics and spectrograms…")
         root.addWidget(self._text, 1)
 
         btn_row = QHBoxLayout()
-        self._apply_btn = QPushButton("Apply Changes to stems.py + Rebuild")
-        self._apply_btn.setObjectName("ApplyBtn")
-        self._apply_btn.setEnabled(False)
-        self._apply_btn.clicked.connect(self._apply_and_rebuild)
         self._close_btn = QPushButton("Close")
         self._close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self._apply_btn)
         btn_row.addStretch()
         btn_row.addWidget(self._close_btn)
         root.addLayout(btn_row)
 
-        # Start worker thread
         import threading
         self._worker = _InspectWorker(decks)
         self._worker.finished.connect(self._on_done)
@@ -501,57 +490,7 @@ class StemInspectDialog(QDialog):
         t.start()
 
     def _on_done(self, analysis: str):
-        self._analysis = analysis
         self._text.setPlainText(analysis)
-        self._apply_btn.setEnabled(True)
 
     def _on_error(self, msg: str):
         self._text.setPlainText(f"ERROR:\n{msg}")
-
-    def _apply_and_rebuild(self):
-        if not self._analysis:
-            return
-        import pathlib, subprocess
-        stems_src_path = pathlib.Path(__file__).parent.parent.parent / "udj" / "core" / "stems.py"
-        if not stems_src_path.exists():
-            QMessageBox.warning(self, "Source Not Found",
-                                f"Cannot find source stems.py at:\n{stems_src_path}\n\n"
-                                "Run from the source directory, not the bundled app.")
-            return
-
-        try:
-            import anthropic
-            client = anthropic.Anthropic()
-            stems_src = stems_src_path.read_text()
-            resp = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                messages=[{"role": "user", "content":
-                    f"Based on this stem quality analysis:\n\n{self._analysis}\n\n"
-                    f"Here is the current stems.py:\n\n```python\n{stems_src}\n```\n\n"
-                    "Apply the recommended parameter changes. Return ONLY the complete "
-                    "updated Python source. No explanation, no markdown fences."}]
-            )
-            new_src = resp.content[0].text.strip()
-            if new_src.startswith("```"):
-                lines = new_src.split("\n")
-                new_src = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-
-            compile(new_src, "stems.py", "exec")   # syntax check
-
-            backup = stems_src_path.with_suffix(".py.bak")
-            stems_src_path.rename(backup)
-            stems_src_path.write_text(new_src)
-
-            QMessageBox.information(self, "Applied",
-                f"stems.py updated (backup: {backup.name})\n\n"
-                "Now rebuild the app:\n"
-                "  cd ~/Desktop/U-DJ\n"
-                "  python3 -m PyInstaller udj.spec --clean -y\n"
-                "  rm -rf ~/Desktop/U-DJ.app\n"
-                "  cp -R dist/U-DJ.app ~/Desktop/U-DJ.app")
-        except SyntaxError as e:
-            QMessageBox.critical(self, "Syntax Error",
-                                 f"Claude returned invalid Python:\n{e}\nNo changes made.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
