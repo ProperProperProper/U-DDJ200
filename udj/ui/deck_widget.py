@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt, QTimer, QUrl, QPointF, QRectF, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (QDragEnterEvent, QDropEvent, QPainter, QPen,
                           QColor, QFont, QRadialGradient, QLinearGradient,
-                          QPainterPath)
+                          QConicalGradient, QPainterPath)
 
 from ..core.deck import Deck, STEM_NAMES
 from .waveform_widget import WaveformWidget
@@ -93,7 +93,6 @@ class PadWidget(QWidget):
             qp.drawRoundedRect(d * 0.4, d, W, H, R, R)
 
         # ── case / housing (bevelled outer frame) ─────────────────────────────
-        from PyQt6.QtGui import QConicalGradient
         case_cg = QConicalGradient(W / 2, H / 2, 45)
         case_cg.setColorAt(0.00, QColor("#343444"))
         case_cg.setColorAt(0.15, QColor("#3c3c4e"))

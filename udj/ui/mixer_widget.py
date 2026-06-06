@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QFrame, QComboBox)
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 from PyQt6.QtGui  import (QPainter, QPen, QColor, QFont,
-                           QRadialGradient, QLinearGradient, QConicalGradient)
+                           QRadialGradient, QLinearGradient)
 
 from ..core.mixer  import Mixer, FX_NAMES
 from ..core.engine import AudioEngine
@@ -54,7 +54,7 @@ class Knob(QWidget):
 
     # ── paint ─────────────────────────────────────────────────────────────────
 
-    def paintEvent(self, _):
+    def paintEvent(self, _):  # noqa: C901
         qp = QPainter(self)
         qp.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -64,170 +64,137 @@ class Knob(QWidget):
         ac   = self._accent
 
         # Radii (from outside in)
-        R_out    = S / 2.0 - 1.0   # chrome bezel outer edge
-        R_chr    = R_out - 3.5     # chrome bezel inner / tick track outer
-        R_tck    = R_chr - 6.0     # tick track inner
-        R_gap    = R_tck - 1.5     # narrow gap ring inner
-        R_body   = R_gap           # main knob face outer
+        R_out  = S / 2.0 - 1.5   # metal ring outer
+        R_ring = R_out - 4.5     # metal ring inner / tick track outer
+        R_tck  = R_ring - 7.0    # tick track inner
+        R_body = R_tck - 2.0     # main knob face
 
-        # ── layered drop shadow (soft, realistic) ─────────────────────────────
+        # ── drop shadow ───────────────────────────────────────────────────────
         qp.setPen(Qt.PenStyle.NoPen)
-        for i in range(7):
-            a = int(55 - i * 7)
-            d = 1.2 + i * 0.6
-            qp.setBrush(QColor(0, 0, 0, a))
-            qp.drawEllipse(QPointF(cx + d * 0.6, cy + d), R_body + i * 0.5, R_body + i * 0.5)
+        for i in range(5):
+            qp.setBrush(QColor(0, 0, 0, 50 - i * 8))
+            d = 0.8 + i * 0.7
+            qp.drawEllipse(QPointF(cx + d * 0.5, cy + d),
+                           R_body + 3 + i, R_body + 3 + i)
 
-        # ── chrome bezel — conical metallic sheen ─────────────────────────────
-        # Conical gradient simulates machined aluminium ring
-        c_grad = QConicalGradient(cx, cy, -60)   # light angle
-        c_grad.setColorAt(0.00, QColor("#d4d4de"))
-        c_grad.setColorAt(0.08, QColor("#f2f2fa"))
-        c_grad.setColorAt(0.18, QColor("#b8b8c8"))
-        c_grad.setColorAt(0.32, QColor("#505060"))
-        c_grad.setColorAt(0.48, QColor("#303038"))
-        c_grad.setColorAt(0.60, QColor("#484858"))
-        c_grad.setColorAt(0.75, QColor("#787888"))
-        c_grad.setColorAt(0.88, QColor("#c0c0d0"))
-        c_grad.setColorAt(1.00, QColor("#d4d4de"))
+        # ── metal ring — linear gradient faking directional light ─────────────
+        # Top-left = bright silver, bottom-right = dark gunmetal
+        ring_grad = QLinearGradient(cx - R_out, cy - R_out,
+                                    cx + R_out, cy + R_out)
+        ring_grad.setColorAt(0.00, QColor("#d8d8e4"))   # bright silver
+        ring_grad.setColorAt(0.30, QColor("#a0a0b4"))
+        ring_grad.setColorAt(0.55, QColor("#383844"))   # dark gunmetal
+        ring_grad.setColorAt(0.80, QColor("#505060"))
+        ring_grad.setColorAt(1.00, QColor("#888898"))   # slight rim bounce
         qp.setPen(Qt.PenStyle.NoPen)
-        qp.setBrush(c_grad)
+        qp.setBrush(ring_grad)
         qp.drawEllipse(QPointF(cx, cy), R_out, R_out)
 
-        # Inner chrome edge highlight (thin bright inner rim of the bezel)
-        inner_rim = QConicalGradient(cx, cy, -60)
-        inner_rim.setColorAt(0.00, QColor(255, 255, 255, 60))
-        inner_rim.setColorAt(0.20, QColor(255, 255, 255, 20))
-        inner_rim.setColorAt(0.50, QColor(0, 0, 0, 40))
-        inner_rim.setColorAt(0.80, QColor(0, 0, 0, 20))
-        inner_rim.setColorAt(1.00, QColor(255, 255, 255, 60))
-        qp.setBrush(inner_rim)
-        qp.drawEllipse(QPointF(cx, cy), R_chr + 1.5, R_chr + 1.5)
+        # ── tick track (dark groove inside the ring) ──────────────────────────
+        qp.setBrush(QColor("#080810"))
+        qp.setPen(QPen(QColor("#040408"), 1))
+        qp.drawEllipse(QPointF(cx, cy), R_ring, R_ring)
 
-        # ── tick track ─────────────────────────────────────────────────────────
-        qp.setBrush(QColor("#07070d"))
-        qp.setPen(QPen(QColor("#050509"), 1))
-        qp.drawEllipse(QPointF(cx, cy), R_chr, R_chr)
-
-        # Tick marks — 11 LED-style dots
+        # ── tick marks (arc segments — high contrast, clearly visible) ────────
         N = 11
         for i in range(N):
             tf    = i / (N - 1)
             angle = math.radians(self._START + tf * self._SWEEP)
             s_, c_ = math.sin(angle), math.cos(angle)
-            mid_r  = (R_chr + R_tck) / 2.0
-            # dot centre
-            dx = cx + mid_r * s_
-            dy = cy - mid_r * c_
+            ox = cx + R_ring * s_;  oy = cy - R_ring * c_
+            ix = cx + R_tck  * s_;  iy = cy - R_tck  * c_
             if tf <= frac:
-                alpha = int(160 + tf * 90)
-                col   = QColor(ac.red(), ac.green(), ac.blue(), alpha)
-                # glow ring around lit dot
-                g_col = QColor(ac.red(), ac.green(), ac.blue(), int(alpha * 0.35))
-                qp.setPen(Qt.PenStyle.NoPen)
-                qp.setBrush(g_col)
-                qp.drawEllipse(QPointF(dx, dy), 2.8, 2.8)
-                qp.setBrush(col)
-                qp.drawEllipse(QPointF(dx, dy), 1.6, 1.6)
+                col = QColor(ac.red(), ac.green(), ac.blue(),
+                             int(170 + tf * 85))
+                pw  = 2.5
             else:
-                qp.setPen(Qt.PenStyle.NoPen)
-                qp.setBrush(QColor("#1c1c2c"))
-                qp.drawEllipse(QPointF(dx, dy), 1.4, 1.4)
+                col = QColor("#1e1e2e")
+                pw  = 1.8
+            qp.setPen(QPen(col, pw, Qt.PenStyle.SolidLine,
+                           Qt.PenCapStyle.RoundCap))
+            qp.drawLine(QPointF(ox, oy), QPointF(ix, iy))
 
-        # ── gap ring (shadow groove between track and body) ────────────────────
+        # ── shadow groove between tick track and body ─────────────────────────
         qp.setPen(Qt.PenStyle.NoPen)
-        qp.setBrush(QColor("#030306"))
+        qp.setBrush(QColor("#020205"))
         qp.drawEllipse(QPointF(cx, cy), R_tck, R_tck)
 
-        # ── knob face — multi-layer photorealistic lighting ───────────────────
-        # Base: directional radial from top-left (main diffuse light)
-        base = QRadialGradient(cx - R_body * 0.30, cy - R_body * 0.35, R_body * 1.50)
-        base.setColorAt(0.00, QColor("#4a4a58"))   # lit zone
-        base.setColorAt(0.20, QColor("#32323e"))
-        base.setColorAt(0.50, QColor("#1e1e26"))
-        base.setColorAt(0.80, QColor("#121218"))
-        base.setColorAt(1.00, QColor("#0a0a0e"))   # shadow edge
-        qp.setPen(QPen(QColor("#18181e"), 1))
-        qp.setBrush(base)
+        # ── knob face — strong directional lighting ───────────────────────────
+        face = QRadialGradient(cx - R_body * 0.35, cy - R_body * 0.40,
+                               R_body * 1.45)
+        face.setColorAt(0.00, QColor("#52525e"))   # lit top-left
+        face.setColorAt(0.25, QColor("#303038"))
+        face.setColorAt(0.60, QColor("#1a1a20"))
+        face.setColorAt(1.00, QColor("#0c0c10"))   # deep shadow
+        qp.setPen(QPen(QColor("#1c1c24"), 1))
+        qp.setBrush(face)
         qp.drawEllipse(QPointF(cx, cy), R_body, R_body)
 
-        # Rim catch-light: subtle colour accent wraps around bottom edge
-        # (simulates coloured studio light bouncing off the rim)
-        rim = QRadialGradient(cx, cy + R_body * 0.78, R_body * 0.55)
-        rim.setColorAt(0.0, QColor(ac.red(), ac.green(), ac.blue(), 22))
+        # accent rim catch-light (bottom — colour bounced from below)
+        rim = QRadialGradient(cx, cy + R_body * 0.80, R_body * 0.50)
+        rim.setColorAt(0.0, QColor(ac.red(), ac.green(), ac.blue(), 28))
         rim.setColorAt(1.0, QColor(0, 0, 0, 0))
         qp.setPen(Qt.PenStyle.NoPen)
         qp.setBrush(rim)
         qp.drawEllipse(QPointF(cx, cy), R_body, R_body)
 
-        # Primary specular: broad soft highlight (top-left)
-        sp1 = QRadialGradient(cx - R_body * 0.28, cy - R_body * 0.33, R_body * 0.60)
-        sp1.setColorAt(0.0, QColor(255, 255, 255, 55))
-        sp1.setColorAt(0.5, QColor(255, 255, 255, 14))
+        # broad specular highlight (top-left dome)
+        sp1 = QRadialGradient(cx - R_body * 0.30, cy - R_body * 0.36,
+                              R_body * 0.58)
+        sp1.setColorAt(0.0, QColor(255, 255, 255, 65))
+        sp1.setColorAt(0.5, QColor(255, 255, 255, 18))
         sp1.setColorAt(1.0, QColor(255, 255, 255, 0))
         qp.setBrush(sp1)
         qp.drawEllipse(QPointF(cx, cy), R_body, R_body)
 
-        # Secondary specular: tiny sharp hot-spot
-        sp2 = QRadialGradient(cx - R_body * 0.31, cy - R_body * 0.37, R_body * 0.14)
-        sp2.setColorAt(0.0, QColor(255, 255, 255, 200))
-        sp2.setColorAt(0.4, QColor(255, 255, 255, 60))
+        # sharp specular hot-spot
+        sp2 = QRadialGradient(cx - R_body * 0.33, cy - R_body * 0.40,
+                              R_body * 0.13)
+        sp2.setColorAt(0.0, QColor(255, 255, 255, 220))
+        sp2.setColorAt(0.5, QColor(255, 255, 255, 50))
         sp2.setColorAt(1.0, QColor(255, 255, 255, 0))
         qp.setBrush(sp2)
         qp.drawEllipse(QPointF(cx, cy), R_body, R_body)
 
-        # Fine inner bevel ring (knob edge is slightly bevelled)
-        bevel = QConicalGradient(cx, cy, -60)
-        bevel.setColorAt(0.00, QColor(255, 255, 255, 28))
-        bevel.setColorAt(0.25, QColor(255, 255, 255, 8))
-        bevel.setColorAt(0.55, QColor(0, 0, 0, 35))
-        bevel.setColorAt(0.80, QColor(0, 0, 0, 15))
-        bevel.setColorAt(1.00, QColor(255, 255, 255, 28))
-        qp.setPen(QPen(QColor(0, 0, 0, 0), 0))
+        # inner bevel stroke
         qp.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(QColor(200, 200, 220, 22), 2.0)
-        qp.setPen(pen)
-        qp.drawEllipse(QPointF(cx, cy), R_body - 0.8, R_body - 0.8)
+        qp.setPen(QPen(QColor(255, 255, 255, 20), 1.5))
+        qp.drawEllipse(QPointF(cx, cy), R_body - 0.75, R_body - 0.75)
 
-        # ── indicator line — recessed groove + glowing fill ───────────────────
+        # ── indicator — groove shadow + 3-pass glow + crisp line ─────────────
         ind     = math.radians(self._START + frac * self._SWEEP)
         si, ci_ = math.sin(ind), math.cos(ind)
-        # endpoints
-        x_far  = cx + (R_body - 4.5) * si
-        y_far  = cy - (R_body - 4.5) * ci_
-        x_near = cx + (R_body * 0.20) * si
-        y_near = cy - (R_body * 0.20) * ci_
+        x_far   = cx + (R_body - 4.0) * si
+        y_far   = cy - (R_body - 4.0) * ci_
+        x_near  = cx + (R_body * 0.22) * si
+        y_near  = cy - (R_body * 0.22) * ci_
 
-        # recessed dark groove (shadow of the engraved slot)
-        qp.setPen(QPen(QColor(0, 0, 0, 160), 4.0,
+        # groove shadow
+        qp.setPen(QPen(QColor(0, 0, 0, 180), 4,
                        Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         qp.drawLine(QPointF(x_near, y_near), QPointF(x_far, y_far))
-
-        # wide outer glow
-        qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(), 35),
-                       8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        # outer glow
+        qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(), 40), 9,
+                       Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         qp.drawLine(QPointF(x_near, y_near), QPointF(x_far, y_far))
-
         # mid glow
-        qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(), 90),
-                       4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(), 100), 4,
+                       Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        qp.drawLine(QPointF(x_near, y_near), QPointF(x_far, y_far))
+        # bright core
+        qp.setPen(QPen(ac, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         qp.drawLine(QPointF(x_near, y_near), QPointF(x_far, y_far))
 
-        # bright core line
-        qp.setPen(QPen(ac, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        qp.drawLine(QPointF(x_near, y_near), QPointF(x_far, y_far))
-
-        # centre pivot jewel
-        piv = QRadialGradient(cx - 0.8, cy - 0.8, R_body * 0.18)
-        piv.setColorAt(0.0, QColor(ac.red(), ac.green(), ac.blue(), 220))
-        piv.setColorAt(0.5, QColor(ac.red(), ac.green(), ac.blue(), 140))
+        # centre jewel
+        piv = QRadialGradient(cx - 0.6, cy - 0.7, R_body * 0.20)
+        piv.setColorAt(0.0, QColor(ac.red(), ac.green(), ac.blue(), 230))
+        piv.setColorAt(0.6, QColor(ac.red(), ac.green(), ac.blue(), 100))
         piv.setColorAt(1.0, QColor(ac.red(), ac.green(), ac.blue(), 0))
         qp.setPen(Qt.PenStyle.NoPen)
         qp.setBrush(piv)
-        qp.drawEllipse(QPointF(cx, cy), 4.5, 4.5)
-        # bright centre dot
-        qp.setBrush(QColor(255, 255, 255, 200))
-        qp.drawEllipse(QPointF(cx - 0.6, cy - 0.7), 1.2, 1.2)
+        qp.drawEllipse(QPointF(cx, cy), 5.0, 5.0)
+        qp.setBrush(QColor(255, 255, 255, 210))
+        qp.drawEllipse(QPointF(cx - 0.6, cy - 0.7), 1.4, 1.4)
 
         qp.end()
 
