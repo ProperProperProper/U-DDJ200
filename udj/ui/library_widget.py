@@ -168,62 +168,50 @@ class LibraryWidget(QWidget):
         self._search.setObjectName("LibSearch")
         self._search.textChanged.connect(self._filter)
 
-        self._btn_scan = QPushButton("+ Add Folder")
-        self._btn_scan.setObjectName("BtnScan")
+        # ── unified toolbar button style ───────────────────────────────────────
+        # One base, accent color per semantic group. Height/font/radius identical.
+        def _tbtn(label: str, accent: str, tooltip: str = "") -> QPushButton:
+            b = QPushButton(label)
+            if tooltip:
+                b.setToolTip(tooltip)
+            b.setFixedHeight(26)
+            b.setStyleSheet(
+                f"QPushButton{{background:#141420;border:1px solid {accent}55;"
+                f"border-radius:3px;color:{accent};font-size:9px;"
+                f"font-weight:bold;letter-spacing:0.5px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:#1c1c2a;border-color:{accent};"
+                f"color:{accent};}}"
+                f"QPushButton:pressed{{background:#0e0e18;}}"
+                f"QPushButton:disabled{{opacity:0.35;}}")
+            return b
+
+        self._btn_scan = _tbtn("+ Add Folder", "#448866")
         self._btn_scan.clicked.connect(self._scan)
 
-        self._btn_stems_inspect = QPushButton("🔬 Inspect Stems")
-        self._btn_stems_inspect.setObjectName("BtnScan")
-        self._btn_stems_inspect.setToolTip(
-            "Inspect stems of loaded deck tracks with Claude — analyses quality "
-            "and recommends post-processing improvements")
-        self._btn_stems_inspect.setStyleSheet(
-            "QPushButton{background:#111;border:1px solid #2a1a3a;color:#aa66ff;"
-            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
-            "QPushButton:disabled{background:#1a1228;border:1px solid #aa66ff;"
-            "color:#cc99ff;}"
-        )
+        self._btn_stems_inspect = _tbtn(
+            "⬡ Inspect Stems", "#9966cc",
+            "Inspect stems of loaded deck tracks — analyses quality")
         self._btn_stems_inspect.clicked.connect(self._run_stems_inspect)
 
-        self._btn_inspect_all = QPushButton("🔬 Inspect All")
-        self._btn_inspect_all.setObjectName("BtnScan")
-        self._btn_inspect_all.setToolTip("Inspect stems of all tracks in library with Claude")
-        self._btn_inspect_all.setStyleSheet(
-            "QPushButton{background:#111;border:1px solid #1a2a3a;color:#66aaff;"
-            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
-            "QPushButton:disabled{background:#121828;border:1px solid #66aaff;"
-            "color:#99ccff;}"
-        )
+        self._btn_inspect_all = _tbtn(
+            "⬡ Inspect All", "#9966cc",
+            "Inspect stems of all tracks in library")
         self._btn_inspect_all.clicked.connect(self._run_inspect_all)
 
-        self._btn_d1 = QPushButton("→ Deck 1")
-        self._btn_d1.setObjectName("BtnLoadDeck")
+        self._btn_d1 = _tbtn("→ Deck 1", "#3ab8d8")
         self._btn_d1.clicked.connect(lambda: self._load_selected(0))
 
-        self._btn_d2 = QPushButton("→ Deck 2")
-        self._btn_d2.setObjectName("BtnLoadDeck")
+        self._btn_d2 = _tbtn("→ Deck 2", "#d89840")
         self._btn_d2.clicked.connect(lambda: self._load_selected(1))
 
-        self._btn_clear = QPushButton("✕ Clear DB")
-        self._btn_clear.setObjectName("BtnScan")
-        self._btn_clear.setToolTip("Clear all tracks from library database")
-        self._btn_clear.setStyleSheet(
-            "QPushButton{background:#111;border:1px solid #3a1a1a;color:#aa4444;"
-            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
-            "QPushButton:hover{border:1px solid #cc4444;color:#ff6666;}"
-        )
+        self._btn_clear = _tbtn(
+            "✕ Clear DB", "#cc4444",
+            "Clear all tracks from library database")
         self._btn_clear.clicked.connect(self._clear_db)
 
-        self._btn_clear_cache = QPushButton("⊘ Clear Stems Cache")
-        self._btn_clear_cache.setObjectName("BtnScan")
-        self._btn_clear_cache.setToolTip(
-            "Delete all cached stem files (~/.udj/stems/) and reset stems flags.\n"
-            "Use this to force re-separation with the latest pipeline.")
-        self._btn_clear_cache.setStyleSheet(
-            "QPushButton{background:#111;border:1px solid #2a2a1a;color:#aaaa44;"
-            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
-            "QPushButton:hover{border:1px solid #cccc44;color:#ffff66;}"
-        )
+        self._btn_clear_cache = _tbtn(
+            "⊘ Clear Stems Cache", "#cc9922",
+            "Delete all cached stem files and reset stems flags.")
         self._btn_clear_cache.clicked.connect(self._clear_stems_cache)
 
         self._cpu_label = QLabel("")

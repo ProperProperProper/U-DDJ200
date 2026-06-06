@@ -52,20 +52,32 @@ class MainWindow(QMainWindow):
         self._midi_status = QLabel("Controller: searching…")
         sb.addPermanentWidget(self._midi_status)
 
-        log_btn = QPushButton("DEV LOG")
+        _sb_btn_base = (
+            "QPushButton{background:#141420;border:1px solid #28283a;"
+            "border-radius:3px;color:#666680;font-size:8px;font-weight:bold;"
+            "letter-spacing:1px;padding:0 8px;}"
+            "QPushButton:hover{color:#aaaacc;border-color:#44445a;}"
+        )
+
+        log_btn = QPushButton("⬡  DEV LOG")
         log_btn.setCheckable(True)
-        log_btn.setFixedHeight(18)
+        log_btn.setFixedHeight(20)
         log_btn.setStyleSheet(
-            "QPushButton{background:transparent;border:1px solid #222230;"
-            "border-radius:2px;color:#2a2a40;font-size:8px;font-weight:bold;"
-            "letter-spacing:2px;padding:0 6px;}"
-            "QPushButton:hover{color:#555568;border-color:#33334a;}"
-            "QPushButton:checked{color:#ffaa00;border-color:#ffaa00;}")
+            _sb_btn_base +
+            "QPushButton:checked{background:#1a1200;border-color:#ffaa00;"
+            "color:#ffaa00;}")
         log_btn.toggled.connect(
             lambda on: self._dev_log.show() if on else self._dev_log.hide())
-        self._dev_log.destroyed.connect(lambda: log_btn.setChecked(False))
         sb.addWidget(log_btn)
         self._log_btn = log_btn
+
+        clr_btn = QPushButton("⊘  CLR LOG")
+        clr_btn.setFixedHeight(20)
+        clr_btn.setStyleSheet(
+            _sb_btn_base +
+            "QPushButton:pressed{background:#1a0a00;border-color:#cc4400;color:#ff6622;}")
+        clr_btn.clicked.connect(self._dev_log._clear)
+        sb.addWidget(clr_btn)
 
         QTimer.singleShot(500, self._check_midi)
 

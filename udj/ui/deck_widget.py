@@ -437,6 +437,14 @@ class DeckWidget(QWidget):
         pads_outer.setSpacing(3)
 
         # Mode tabs — lit = active mode
+        _MODE_BTN_BASE = (
+            "QPushButton{"
+            "background:#181820;border:1px solid #272736;"
+            "border-radius:3px;color:#3a3a50;"
+            "font-size:7px;font-weight:bold;letter-spacing:0.5px;padding:0 5px;}"
+            "QPushButton:hover{color:#555568;border-color:#333348;}"
+        )
+
         mode_row = QHBoxLayout()
         mode_row.setSpacing(3)
         for mode in _CYCLE_MODES:
@@ -446,9 +454,9 @@ class DeckWidget(QWidget):
             b.setChecked(mode == "STEMS")
             b.setFixedHeight(20)
             b.setStyleSheet(
-                f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                f"border-radius:3px;color:#555;font-size:7px;font-weight:bold;padding:0 4px;}}"
-                f"QPushButton:checked{{background:{color}22;border:1px solid {color};color:{color};}}")
+                _MODE_BTN_BASE +
+                f"QPushButton:checked{{background:{color};"
+                f"border:1px solid {color};color:#000000;}}")
             b.clicked.connect(lambda _, m=mode: self._set_pad_mode(m))
             mode_row.addWidget(b)
             self._mode_btns[mode] = b
