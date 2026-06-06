@@ -227,7 +227,6 @@ class LibraryWidget(QWidget):
         self._cpu_timer.timeout.connect(self._update_cpu)
 
         self._btn_clear_log = _tbtn("⊘  Clear Log", "#cc4400")
-        self._btn_clear_log.setVisible(False)   # wired by main_window after dev_log is ready
 
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
