@@ -44,17 +44,29 @@ class BeatGridWidget(QWidget):
         self.setFixedHeight(self.HEIGHT)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self._grid_log_tick = 0
-        # Pre-allocated pixel buffers, resized on first use or width change
-        self._wf_buf = [None, None]
-        self._wf_buf_w = [0, 0]
-        # Smooth-scroll interpolation: snapshot position + wall-clock time each tick
-        self._snap_pos  = [0.0, 0.0]   # deck.position at last tick
-        self._snap_time = [0.0, 0.0]   # perf_counter at last tick
-        self._snap_rate = [1.0, 1.0]   # deck.rate at last tick
+        # Pre-allocated render buffers — reallocated only on width/height change
+        self._wf_buf   = [None, None]   # RGBA8888 uint8 (row_h, W, 4)
+        self._wf_w     = [0, 0]
+        self._wf_h     = [0, 0]
+        # Per-deck pre-allocated intermediate arrays (W-length, reallocated on resize)
+        self._arr_x    = [None, None]   # float64 arange(W)
+        self._arr_lo   = [None, None]
+        self._arr_mi   = [None, None]
+        self._arr_hi   = [None, None]
+        self._arr_R    = [None, None]
+        self._arr_G    = [None, None]
+        self._arr_B    = [None, None]
+        self._arr_barh = [None, None]
+        self._arr_bart = [None, None]
+        # Smooth-scroll interpolation
+        self._snap_pos  = [0.0, 0.0]
+        self._snap_time = [0.0, 0.0]
+        self._snap_rate = [1.0, 1.0]
 
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(16)   # ~60 fps
+        self._timer.start(16)
 
     def _tick(self):
         if all(d.audio is None for d in self._engine.decks):
@@ -187,58 +199,72 @@ class BeatGridWidget(QWidget):
 
     def _paint_waveform(self, qp, d_idx, wf, pos, beat_len,
                         px_per_beat, cx, W, row_top, row_h):
-        # Ensure buffer sized correctly (reuse between frames)
-        if self._wf_buf[d_idx] is None or self._wf_buf_w[d_idx] != W:
+        # Reallocate only when geometry changes
+        if self._wf_buf[d_idx] is None or self._wf_w[d_idx] != W or self._wf_h[d_idx] != row_h:
             self._wf_buf[d_idx]   = np.zeros((row_h, W, 4), dtype=np.uint8)
-            self._wf_buf_w[d_idx] = W
+            self._wf_w[d_idx]     = W
+            self._wf_h[d_idx]     = row_h
+            self._arr_x[d_idx]    = np.arange(W, dtype=np.float64)
+            self._arr_lo[d_idx]   = np.empty(W, np.float32)
+            self._arr_mi[d_idx]   = np.empty(W, np.float32)
+            self._arr_hi[d_idx]   = np.empty(W, np.float32)
+            self._arr_R[d_idx]    = np.empty(W, np.float32)
+            self._arr_G[d_idx]    = np.empty(W, np.float32)
+            self._arr_B[d_idx]    = np.empty(W, np.float32)
+            self._arr_barh[d_idx] = np.empty(W, np.int32)
+            self._arr_bart[d_idx] = np.empty(W, np.int32)
 
-        buf = self._wf_buf[d_idx]
-        buf[:] = 0   # clear previous frame
+        buf   = self._wf_buf[d_idx]
+        x_arr = self._arr_x[d_idx]
+        lo    = self._arr_lo[d_idx]
+        mi    = self._arr_mi[d_idx]
+        hi    = self._arr_hi[d_idx]
+        R     = self._arr_R[d_idx]
+        G     = self._arr_G[d_idx]
+        B     = self._arr_B[d_idx]
+        bar_h = self._arr_barh[d_idx]
+        bar_t = self._arr_bart[d_idx]
 
-        # Map every pixel column → waveform frame index
-        x_arr  = np.arange(W, dtype=np.float64)
-        samp   = pos + (x_arr - cx) * (beat_len / px_per_beat)
-        w_idx  = (samp / WAVEFORM_HOP).astype(np.int64)
-        valid  = (w_idx >= 0) & (w_idx < len(wf))
+        buf[:] = 0
 
-        # Gather band energies for valid columns only
-        lo = np.zeros(W, np.float32)
-        mi = np.zeros(W, np.float32)
-        hi = np.zeros(W, np.float32)
+        samp  = pos + (x_arr - cx) * (beat_len / px_per_beat)
+        w_idx = (samp / WAVEFORM_HOP).astype(np.int64)
+        valid = (w_idx >= 0) & (w_idx < len(wf))
+
+        lo[:] = 0.0; mi[:] = 0.0; hi[:] = 0.0
         if valid.any():
-            vi      = w_idx[valid]
+            vi = w_idx[valid]
             lo[valid] = wf[vi, 0]
             mi[valid] = wf[vi, 1]
             hi[valid] = wf[vi, 2]
 
-        # Serato-style colour: bass=red, mid=green, high=blue
-        # Brightness spotlight: full brightness at centre, 30% at edges
-        dist    = np.abs(x_arr - cx) / (W / 2.0)         # 0=centre, 1=edge
-        bright  = np.clip(1.0 - dist * 0.7, 0.3, 1.0)
+        dist   = np.abs(x_arr - cx) / (W / 2.0)
+        bright = np.clip(1.0 - dist * 0.7, 0.3, 1.0)
+        np.clip(lo * 3.0 * bright, 0, 1, out=R)
+        np.clip(mi * 2.0 * bright, 0, 1, out=G)
+        np.clip(hi * 2.5 * bright, 0, 1, out=B)
 
-        R = np.clip(lo * 3.0 * bright, 0, 1)
-        G = np.clip(mi * 2.0 * bright, 0, 1)
-        B = np.clip(hi * 2.5 * bright, 0, 1)
-
-        # Bar height: energy magnitude, centred vertically
-        amp    = np.sqrt(lo ** 2 + mi ** 2 + hi ** 2) / 1.732  # normalise √3
-        bar_h  = (row_h * 0.88 * amp).astype(np.int32).clip(1, row_h)
+        amp = np.sqrt(lo * lo + mi * mi + hi * hi) * (1.0 / 1.732)
+        np.clip((row_h * 0.88 * amp).astype(np.int32), 1, row_h, out=bar_h)
         bar_h[~valid] = 0
-        bar_t  = ((row_h - bar_h) / 2.0).astype(np.int32)
+        np.subtract(row_h, bar_h, out=bar_t)
+        bar_t >>= 1   # divide by 2
 
-        # Vectorised fill: in_bar[y, x] True where pixel is inside the bar
+        # Vectorised fill — reuse pre-allocated buf in-place
         y_arr  = np.arange(row_h, dtype=np.int32)
         in_bar = (y_arr[:, None] >= bar_t[None, :]) & \
-                 (y_arr[:, None] <  (bar_t + bar_h)[None, :])   # (row_h, W)
+                 (y_arr[:, None] <  (bar_t + bar_h)[None, :])
 
-        # RGBA fill (Format_RGBA8888)
-        buf[:, :, 0] = np.where(in_bar, (R * 255).astype(np.uint8)[None, :], 0)
-        buf[:, :, 1] = np.where(in_bar, (G * 255).astype(np.uint8)[None, :], 0)
-        buf[:, :, 2] = np.where(in_bar, (B * 255).astype(np.uint8)[None, :], 0)
+        Ru = (R * 255).astype(np.uint8)
+        Gu = (G * 255).astype(np.uint8)
+        Bu = (B * 255).astype(np.uint8)
+        buf[:, :, 0] = np.where(in_bar, Ru[None, :], 0)
+        buf[:, :, 1] = np.where(in_bar, Gu[None, :], 0)
+        buf[:, :, 2] = np.where(in_bar, Bu[None, :], 0)
         buf[:, :, 3] = np.where(in_bar, 230, 0)
 
-        raw   = buf.tobytes()
-        qimg  = QImage(raw, W, row_h, W * 4, QImage.Format.Format_RGBA8888)
+        # Pass numpy buffer directly — no tobytes() copy
+        qimg = QImage(buf.data, W, row_h, W * 4, QImage.Format.Format_RGBA8888)
         qp.drawImage(0, row_top, qimg)
 
 
