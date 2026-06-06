@@ -32,9 +32,9 @@ _SEP    = QColor("#1a1a28")
 _NOW    = QColor("#ffffff")
 
 # Beat grid — white lines at varying opacity, Serato-accurate
-_BEAT_BAR_PEN  = QPen(QColor(255, 255, 255, 210), 2)   # bar (beat 1): thick bright white
-_BEAT_BAR_GLOW = QPen(QColor(255, 255, 255,  40), 4)   # soft glow behind bar line
-_BEAT_PEN      = QPen(QColor(255, 255, 255, 100), 1)   # regular beat: thin dim white
+_BEAT_BAR_PEN  = QPen(QColor(255, 255, 255, 200), 1)   # bar (beat 1): 1px bright white
+_BEAT_BAR_GLOW = QPen(QColor(255, 255, 255,  30), 3)   # narrow soft glow
+_BEAT_PEN      = QPen(QColor(255, 255, 255,  80), 1)   # regular beat: dim white
 
 _WINDOW_BEATS = 16
 
@@ -262,8 +262,11 @@ class BeatGridWidget(QWidget):
         np.clip(mi * 2.0 * bright, 0, 1, out=G)
         np.clip(hi * 2.5 * bright, 0, 1, out=B)
 
-        amp = np.sqrt(lo * lo + mi * mi + hi * hi) * (1.0 / 1.732)
-        np.clip((row_h * 0.88 * amp).astype(np.int32), 1, row_h, out=bar_h)
+        # Use dominant-band energy for height so bass/mid/hi-only sections
+        # show tall bars — vector magnitude divided by √3 made single-band
+        # sections appear at only ~48% height.
+        amp = np.maximum(np.maximum(lo, mi), hi)
+        np.clip((row_h * 0.92 * amp).astype(np.int32), 1, row_h, out=bar_h)
         bar_h[~valid] = 0
         np.subtract(row_h, bar_h, out=bar_t)
         bar_t >>= 1   # divide by 2
