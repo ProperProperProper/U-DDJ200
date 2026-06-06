@@ -332,18 +332,18 @@ class LibraryWidget(QWidget):
             QMessageBox.warning(self, "No Engine", "Engine not connected.")
             return
 
-        paths = []
+        decks = []
         for i in range(2):
             deck = engine.deck(i)
-            if deck.audio is not None and deck.file_path:
-                paths.append(deck.file_path)
+            if deck.stems_ready and deck.stems and deck.file_path:
+                decks.append(deck)
 
-        if not paths:
-            QMessageBox.warning(self, "No Tracks Loaded",
-                                "Load tracks on the decks first, then run inspection.")
+        if not decks:
+            QMessageBox.warning(self, "No Stems Ready",
+                                "Load tracks on the decks and wait for ● STEMS READY.")
             return
 
-        dlg = StemInspectDialog(paths, parent=self)
+        dlg = StemInspectDialog(decks, parent=self)
         dlg.exec()
 
     def analysis_progress_start(self, total: int):
@@ -379,29 +379,24 @@ class LibraryWidget(QWidget):
 # ── Stem Inspection Dialog ────────────────────────────────────────────────────
 
 class _InspectWorker(QObject):
-    finished  = pyqtSignal(str)   # analysis text
+    finished  = pyqtSignal(str)
     error     = pyqtSignal(str)
 
-    def __init__(self, paths: list[str]):
+    def __init__(self, decks):
         super().__init__()
-        self._paths = paths
+        self._decks = decks
 
     def run(self):
-        import sys, pathlib, json, base64, io
-        sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
+        import pathlib, importlib.util, sys as _sys
         try:
             import numpy as np
             import soundfile as sf
             from ..core.stems import STEM_NAMES as _STEM_NAMES
-            from ..core.stems import _cache_path, _load_cache
-            import importlib.util, sys as _sys
 
             sr = 44100
             all_metrics = []
             all_specs   = []
 
-            # Import metric helpers from dev_inspect_stems
-            # Check bundle root (PyInstaller) then source tree
             _candidates = [
                 pathlib.Path(getattr(_sys, '_MEIPASS', '')) / "dev_inspect_stems.py",
                 pathlib.Path(__file__).parent.parent.parent / "dev_inspect_stems.py",
@@ -414,18 +409,11 @@ class _InspectWorker(QObject):
             mod  = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            skipped = []
-            for path in self._paths:
+            for deck in self._decks:
+                path = deck.file_path
                 name = pathlib.Path(path).stem[:50]
-                npz = _cache_path(path)
-                stems = _load_cache(npz, sr) if npz and pathlib.Path(npz).exists() else None
-                if stems is None:
-                    skipped.append(name)
-                    continue
-
-                stems.pop("_vocal_present", None)
-                # Keep only the 4 primary stems
-                stems = {k: v for k, v in stems.items() if k in _STEM_NAMES or k == "_vocal_present"}
+                stems = {k: v.copy() for k, v in deck.stems.items()
+                         if isinstance(v, np.ndarray) and k in _STEM_NAMES}
 
                 orig, orig_sr = sf.read(path, dtype="float32", always_2d=True)
                 if orig.shape[1] == 1:
@@ -435,18 +423,14 @@ class _InspectWorker(QObject):
                     from scipy.signal import resample_poly
                     g = gcd(orig_sr, sr)
                     orig = resample_poly(orig, sr // g, orig_sr // g).astype(np.float32)
-                n = min(len(orig), min(len(v) for v in stems.values() if isinstance(v, np.ndarray)))
-                orig = orig[:n]
-                stems = {k: v[:n] for k, v in stems.items() if isinstance(v, np.ndarray)}
+                n = min(len(orig), min(len(v) for v in stems.values()))
+                orig  = orig[:n]
+                stems = {k: v[:n] for k, v in stems.items()}
 
                 metrics = mod.compute_metrics(stems, orig, sr, name)
                 spec_png = mod.make_spectrogram(stems, sr, name)
                 all_metrics.append(metrics)
                 all_specs.append(spec_png)
-
-            if not all_metrics:
-                self.error.emit("No tracks with cached stems found. Load tracks on decks and wait for ● STEMS READY.")
-                return
             analysis = mod.analyse_with_claude(all_metrics, all_specs)
             if skipped:
                 note = f"\n\n---\n⚠ Skipped {len(skipped)} track(s) without stems: {', '.join(skipped[:5])}"
@@ -462,7 +446,7 @@ class _InspectWorker(QObject):
 
 class StemInspectDialog(QDialog):
 
-    def __init__(self, track_paths: list[str], parent=None):
+    def __init__(self, decks, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🔬 Stem Inspection — Claude Analysis")
         self.setMinimumSize(820, 600)
@@ -476,14 +460,13 @@ class StemInspectDialog(QDialog):
             "QPushButton#ApplyBtn{border-color:#aa66ff;color:#cc99ff;}"
             "QPushButton#ApplyBtn:hover{background:#2a1a3a;}"
         )
-        self._paths = track_paths
         self._analysis = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        tracks_text = " + ".join(p.split("/")[-1][:40] for p in track_paths)
+        tracks_text = " + ".join(d.file_path.split("/")[-1][:40] for d in decks)
         hdr = QLabel(f"Analysing: {tracks_text}")
         hdr.setStyleSheet("color:#aa66ff;font-weight:bold;font-size:11px;")
         hdr.setWordWrap(True)
@@ -511,7 +494,7 @@ class StemInspectDialog(QDialog):
 
         # Start worker thread
         import threading
-        self._worker = _InspectWorker(track_paths)
+        self._worker = _InspectWorker(decks)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         t = threading.Thread(target=self._worker.run, daemon=True)
