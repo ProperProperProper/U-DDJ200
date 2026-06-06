@@ -140,21 +140,35 @@ class BeatGridWidget(QWidget):
                 self._paint_waveform(qp, d_idx, wf, pos, beat_len,
                                      px_per_beat, cx, W, row_top, row_h)
 
-            # ── 2. Beat grid ticks ───────────────────────────────
-            vis_lo     = pos - half_w_samp
-            vis_hi     = pos + half_w_samp
-            rel_start  = vis_lo - first_beat
-            beat_start = max(0, int(rel_start / beat_len) - 1)
-            beat_end   = beat_start + _WINDOW_BEATS + 4
+            # ── 2. Beat grid ticks — use actual beat array to avoid drift ──
+            vis_lo = pos - half_w_samp
+            vis_hi = pos + half_w_samp
+            dbo    = int(getattr(deck, 'downbeat_offset', 0) or 0)
+            beats  = deck.beats
 
-            dbo = int(getattr(deck, 'downbeat_offset', 0) or 0)
-            for i in range(beat_start, beat_end):
-                bp = first_beat + i * beat_len
-                if bp > vis_hi:
-                    break
-                px = int(cx + (bp - pos) / beat_len * px_per_beat)
-                if 0 <= px < W:
-                    _draw_tick(qp, px, row_top, row_h, (i + dbo) % 4 == 0, col)
+            if beats is not None and len(beats) >= 2:
+                # Binary search to the first beat in the visible window
+                i0 = max(0, int(np.searchsorted(beats, vis_lo)) - 1)
+                for j in range(i0, len(beats)):
+                    bp = beats[j]
+                    if bp > vis_hi:
+                        break
+                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                    if 0 <= px < W:
+                        _draw_tick(qp, px, row_top, row_h, (j + dbo) % 4 == 0, col)
+            else:
+                # Fallback: uniform grid from first_beat + bpm
+                vis_lo_fb  = pos - half_w_samp
+                vis_hi_fb  = pos + half_w_samp
+                rel_start  = vis_lo_fb - first_beat
+                beat_start = max(0, int(rel_start / beat_len) - 1)
+                for i in range(beat_start, beat_start + _WINDOW_BEATS + 4):
+                    bp = first_beat + i * beat_len
+                    if bp > vis_hi_fb:
+                        break
+                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                    if 0 <= px < W:
+                        _draw_tick(qp, px, row_top, row_h, (i + dbo) % 4 == 0, col)
 
             # ── 3. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master
