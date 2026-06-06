@@ -352,7 +352,15 @@ def _flag(score: float, warn: float, bad: float) -> str:
 def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
     lines = []
 
-    for metrics in all_metrics:
+    for entry in all_metrics:
+        # Accept either a plain metrics dict or a (before, after) tuple
+        if isinstance(entry, tuple):
+            metrics_before, metrics_after = entry
+        else:
+            metrics_before = entry
+            metrics_after  = None
+
+        metrics = metrics_before
         track  = metrics["track"]
         stems  = metrics["stems"]
         contam = metrics["cross_contamination_0_to_1"]
@@ -413,19 +421,19 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
                 src, tgt = label.split(" leaking into ")
                 if src == "bass" and tgt == "other":
                     recommendations.append(
-                        f"  OTHER: hp_order → 10–12 (currently 8) — bass still bleeding into synths (corr={score:.2f})")
+                        f"  OTHER: raise hp_order — bass bleeding into synths (corr={score:.2f})")
                 elif src == "drums" and tgt == "bass":
                     recommendations.append(
-                        f"  BASS: add de-drum notch 55–80 Hz or raise hp_hz — kick transients leaking (corr={score:.2f})")
+                        f"  BASS: add de-drum notch 55–80 Hz — kick transients leaking (corr={score:.2f})")
                 elif src == "drums" and tgt == "other":
                     recommendations.append(
-                        f"  OTHER: transient suppressor threshold → lower — drum hits leaking into synths (corr={score:.2f})")
+                        f"  OTHER: lower transient suppressor threshold — drum hits in synths (corr={score:.2f})")
                 elif src == "drums" and tgt == "vocals":
                     recommendations.append(
-                        f"  VOCALS: gate_threshold_dbfs → -20 (currently -24) — hats leaking (corr={score:.2f})")
+                        f"  VOCALS: spectral subtraction alpha → higher — hats leaking (corr={score:.2f})")
                 elif src == "bass" and tgt == "vocals":
                     recommendations.append(
-                        f"  VOCALS: hp_hz → 150–200 (currently 100) — bass leaking into vocals (corr={score:.2f})")
+                        f"  VOCALS: raise hp_hz — bass leaking into vocals (corr={score:.2f})")
 
         lines.append("")
 
@@ -449,14 +457,44 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
                 lines.append(f"  {f}")
 
         lines.append("")
-        lines.append("AUTO-FIX APPLIED TO LIVE STEMS")
+        lines.append("AUTO-FIX APPLIED  (saved to disk cache)")
         lines.append("─" * 40)
-        if recommendations:
-            lines.append("  Corrections applied in memory for this session:")
-            for r in sorted(set(recommendations)):
-                lines.append(f"  ✔ {r.strip()}")
+        if metrics_after:
+            after_stems  = metrics_after["stems"]
+            after_contam = metrics_after["cross_contamination_0_to_1"]
+            improved = []
+            unchanged = []
+            for label, before_score in contam.items():
+                after_score = after_contam.get(label, before_score)
+                delta = before_score - after_score
+                if delta >= 0.01:
+                    improved.append(f"  ✔ {label:<35s} {before_score:.3f} → {after_score:.3f}  (−{delta:.3f})")
+                elif before_score >= _CONTAMINATION_WARN:
+                    unchanged.append(f"  − {label:<35s} {before_score:.3f} → {after_score:.3f}  (no change)")
+            for stem_name, bm in stems.items():
+                am = after_stems.get(stem_name, {})
+                for band in ["sub_20_80hz", "hi_4k_16k", "mid_1k_4k"]:
+                    bv = bm.get(band, 0.0)
+                    av = am.get(band, bv)
+                    lo, hi = (_STEM_EXPECTED_BANDS.get(stem_name, {}) or {}).get(band, (0, 999))
+                    if bv > hi and av <= hi:
+                        improved.append(f"  ✔ {stem_name.upper()} {band:<20s} {bv:.3f} → {av:.3f}  (fixed)")
+                    elif bv > hi and av > hi:
+                        unchanged.append(f"  − {stem_name.upper()} {band:<20s} {bv:.3f} → {av:.3f}  (still high)")
+            if improved:
+                for line in improved:
+                    lines.append(line)
+            if unchanged:
+                for line in unchanged:
+                    lines.append(line)
+            if not improved and not unchanged:
+                lines.append("  ✔ Stems were already clean — no corrections applied.")
         else:
-            lines.append("  ✔ No corrections needed — stems are clean.")
+            if recommendations:
+                for r in sorted(set(recommendations)):
+                    lines.append(f"  ✔ {r.strip()}")
+            else:
+                lines.append("  ✔ No corrections needed.")
 
         lines.append("")
 
