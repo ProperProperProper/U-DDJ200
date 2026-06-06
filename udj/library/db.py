@@ -69,6 +69,7 @@ def init_db():
         """)
         for col, defval in [("stems_cached", "0"),
                             ("stems_failed", "0"),
+                            ("stems_inspected", "0"),
                             ("analysis_version", "''"),
                             ("first_beat_sec", "0.0"),
                             ("beat_positions_json", "'[]'"),
@@ -203,6 +204,12 @@ def record_play(path: str):
             SET last_played = ?, play_count = play_count + 1
             WHERE path = ?
         """, (time.time(), path))
+        con.commit()
+
+
+def mark_stems_inspected(path: str):
+    with _conn() as con:
+        con.execute("UPDATE tracks SET stems_inspected=1 WHERE path=?", (path,))
         con.commit()
 
 

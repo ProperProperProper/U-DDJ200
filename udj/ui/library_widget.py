@@ -23,6 +23,9 @@ COLS    = ["", "Title", "Artist", "BPM", "Key", "Camelot", "Energy", "LUFS", "Du
 COL_MAP = ["_status", "title", "artist", "bpm", "key", "camelot", "energy", "loudness_lufs", "duration", "path"]
 
 
+_inspecting_paths: set[str] = set()   # paths currently being inspected
+
+
 def _analysis_status(row: dict) -> tuple[str, str]:
     """Return (label, color) indicating analysis + stems state clearly."""
     has_beats   = bool(row.get("beat_positions_json") not in (None, "", "[]"))
@@ -31,15 +34,21 @@ def _analysis_status(row: dict) -> tuple[str, str]:
     has_camelot = bool(row.get("camelot"))
     has_bpm     = bool(row.get("bpm"))
     has_stems   = bool(row.get("stems_cached")) or bool(row.get("stems_failed"))
+    inspected   = bool(row.get("stems_inspected"))
     full_analysis = has_beats and has_phrases and has_lufs and has_camelot and has_bpm
 
+    path = row.get("path", "")
+    if path in _inspecting_paths:
+        return "🔬 INSPECTING", "#cc88ff"
+    if full_analysis and has_stems and inspected:
+        return "🔬 READY",    "#00ee88"
     if full_analysis and has_stems:
-        return "✔ READY",    "#00ee88"   # bright green — everything done
+        return "✔ READY",    "#00ee88"
     if full_analysis:
-        return "⏳ STEMS",   "#44aaff"   # blue — analysis done, stems pending
+        return "⏳ STEMS",   "#44aaff"
     if has_bpm and has_beats:
-        return "⚙ ANALYSING","#ffaa00"   # amber — partial
-    return "✖ NO DATA",      "#ff4444"   # red — not analysed
+        return "⚙ ANALYSING","#ffaa00"
+    return "✖ NO DATA",      "#ff4444"
 
 
 class TrackModel(QAbstractTableModel):
@@ -130,6 +139,7 @@ class LibraryWidget(QWidget):
         self.on_load_deck1 = on_load_deck1
         self.on_load_deck2 = on_load_deck2
         self._active_deck     = 0
+        self.on_library_changed: Optional[Callable[[], None]] = None
         self._watched_folder  = ""
         self._watcher         = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_folder_changed)
@@ -367,33 +377,36 @@ class LibraryWidget(QWidget):
         self._engine = engine
 
     def _run_inspect_all(self):
-        """Inspect stems for every track in the library."""
-        paths = [t["path"] for t in self._model._rows if t.get("path")]
-        if not paths:
-            QMessageBox.warning(self, "Empty Library", "No tracks in library.")
-            return
-        dlg = StemInspectDialog(paths, parent=self)
-        dlg.exec()
+        selected = [t["path"] for t in self._model._rows if t.get("path")]
+        self._launch_inspect(selected)
 
     def _run_stems_inspect(self):
-        """Run dev_inspect_stems on the tracks currently loaded on decks."""
-        engine = getattr(self, "_engine", None)
-        if engine is None:
-            QMessageBox.warning(self, "No Engine", "Engine not connected.")
+        """Inspect selected library tracks (no deck load required)."""
+        selected = []
+        for idx in self._table.selectedIndexes():
+            src_row = self._proxy.mapToSource(idx).row()
+            t = self._model.track_at(src_row)
+            if t and t.get("path") and t["path"] not in selected:
+                selected.append(t["path"])
+
+        if not selected:
+            QMessageBox.warning(self, "No Selection",
+                                "Select one or more tracks in the library first.")
             return
+        self._launch_inspect(selected)
 
-        decks = []
-        for i in range(2):
-            deck = engine.deck(i)
-            if deck.stems_ready and deck.stems and deck.file_path:
-                decks.append(deck)
-
-        if not decks:
-            QMessageBox.warning(self, "No Stems Ready",
-                                "Load tracks on the decks and wait for ● STEMS READY.")
+    def _launch_inspect(self, paths: list):
+        if not paths:
             return
+        global _inspecting_paths
+        _inspecting_paths.update(paths)
+        self._model.reload()
 
-        dlg = StemInspectDialog(decks, parent=self)
+        def _on_done():
+            _inspecting_paths.difference_update(paths)
+            self._model.reload()
+
+        dlg = StemInspectDialog(paths, self, on_complete=_on_done)
         dlg.exec()
 
     def analysis_progress_start(self, total: int):
@@ -431,17 +444,20 @@ class LibraryWidget(QWidget):
 class _InspectWorker(QObject):
     finished  = pyqtSignal(str)
     error     = pyqtSignal(str)
+    progress  = pyqtSignal(str)   # status updates while running
 
-    def __init__(self, decks):
+    def __init__(self, paths: list[str]):
         super().__init__()
-        self._decks = decks
+        self._paths = paths
 
     def run(self):
         import pathlib, importlib.util, sys as _sys
         try:
             import numpy as np
             import soundfile as sf
-            from ..core.stems import STEM_NAMES as _STEM_NAMES
+            from ..core.stems import (STEM_NAMES as _STEM_NAMES, _cache_path,
+                                      _load_cache, _save_cache, _separate_demucs)
+            from ..library.db import log_stem_inspection, mark_stems_inspected, get_track
 
             sr = 44100
             all_metrics = []
@@ -459,10 +475,22 @@ class _InspectWorker(QObject):
             mod  = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            for deck in self._decks:
-                path = deck.file_path
+            for path in self._paths:
                 name = pathlib.Path(path).stem[:50]
-                stems = {k: v.copy() for k, v in deck.stems.items()
+                self.progress.emit(f"Loading stems: {name[:40]}…")
+
+                # Load stems from disk cache, or run separation if not cached
+                npz = _cache_path(path)
+                stems = _load_cache(npz, sr) if npz and pathlib.Path(npz).exists() else None
+                if stems is None:
+                    self.progress.emit(f"Separating stems (first time): {name[:30]}…")
+                    track_meta = get_track(path) or {}
+                    stems = _separate_demucs(path, sr, track_meta)
+                    _save_cache(stems, npz)
+                    from ..library.db import mark_stems_cached
+                    mark_stems_cached(path)
+
+                stems = {k: v for k, v in stems.items()
                          if isinstance(v, np.ndarray) and k in _STEM_NAMES}
 
                 orig, orig_sr = sf.read(path, dtype="float32", always_2d=True)
@@ -477,23 +505,22 @@ class _InspectWorker(QObject):
                 orig  = orig[:n]
                 stems = {k: v[:n] for k, v in stems.items()}
 
+                self.progress.emit(f"Computing metrics: {name[:40]}…")
                 metrics_before = mod.compute_metrics(stems, orig, sr, name)
 
-                # Auto-fix: apply corrective DSP, write back into deck.stems and disk cache
+                self.progress.emit(f"Applying auto-fix: {name[:40]}…")
                 fixed = mod.auto_fix_stems(stems, metrics_before, sr)
-                for stem_name, arr in fixed.items():
-                    if stem_name in deck.stems:
-                        deck.stems[stem_name][:n] = arr
-                from ..core.stems import _cache_path, _save_cache
-                from ..library.db import log_stem_inspection
-                _save_cache(fixed, _cache_path(path))
+                _save_cache(fixed, npz)
 
                 metrics_after = mod.compute_metrics(fixed, orig, sr, name)
                 log_stem_inspection(path, metrics_before, metrics_after)
+                mark_stems_inspected(path)
                 metrics_before["_after"] = metrics_after
                 spec_png = mod.make_spectrogram(fixed, sr, name)
                 all_metrics.append(metrics_before)
                 all_specs.append(spec_png)
+
+            self.progress.emit("Generating report…")
             analysis = mod.analyse_with_claude(all_metrics, all_specs)
             self.finished.emit(analysis)
 
@@ -504,8 +531,9 @@ class _InspectWorker(QObject):
 
 class StemInspectDialog(QDialog):
 
-    def __init__(self, decks, parent=None):
+    def __init__(self, paths: list[str], parent=None, on_complete=None):
         super().__init__(parent)
+        self._on_complete = on_complete
         self.setWindowTitle("🔬 Stem Inspection")
         self.setMinimumSize(820, 600)
         self.setStyleSheet(
@@ -516,21 +544,24 @@ class StemInspectDialog(QDialog):
             "border-radius:4px;padding:4px 14px;font-size:11px;font-weight:bold;}"
             "QPushButton:hover{background:#2a2a3a;color:#fff;}"
         )
-        self._analysis = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        tracks_text = " + ".join(d.file_path.split("/")[-1][:40] for d in decks)
-        hdr = QLabel(f"Analysing: {tracks_text}")
+        tracks_text = " + ".join(p.split("/")[-1][:40] for p in paths)
+        hdr = QLabel(f"Inspecting: {tracks_text}")
         hdr.setStyleSheet("color:#aa66ff;font-weight:bold;font-size:11px;")
         hdr.setWordWrap(True)
         root.addWidget(hdr)
 
+        self._status = QLabel("Starting…")
+        self._status.setStyleSheet("color:#888;font-size:10px;")
+        root.addWidget(self._status)
+
         self._text = QTextEdit()
         self._text.setReadOnly(True)
-        self._text.setPlaceholderText("Computing metrics and spectrograms…")
+        self._text.setPlaceholderText("Running stem inspection…")
         root.addWidget(self._text, 1)
 
         btn_row = QHBoxLayout()
@@ -541,14 +572,21 @@ class StemInspectDialog(QDialog):
         root.addLayout(btn_row)
 
         import threading
-        self._worker = _InspectWorker(decks)
+        self._worker = _InspectWorker(paths)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
+        self._worker.progress.connect(self._on_progress)
         t = threading.Thread(target=self._worker.run, daemon=True)
         t.start()
 
+    def _on_progress(self, msg: str):
+        self._status.setText(msg)
+
     def _on_done(self, analysis: str):
+        self._status.setText("Complete.")
         self._text.setPlainText(analysis)
+        if self._on_complete:
+            self._on_complete()
 
     def _on_error(self, msg: str):
         self._text.setPlainText(f"ERROR:\n{msg}")
