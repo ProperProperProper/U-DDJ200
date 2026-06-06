@@ -31,6 +31,11 @@ _BG     = QColor("#06060c")
 _SEP    = QColor("#1a1a28")
 _NOW    = QColor("#ffffff")
 
+# Beat grid — white lines at varying opacity, Serato-accurate
+_BEAT_BAR_PEN  = QPen(QColor(255, 255, 255, 210), 2)   # bar (beat 1): thick bright white
+_BEAT_BAR_GLOW = QPen(QColor(255, 255, 255,  40), 4)   # soft glow behind bar line
+_BEAT_PEN      = QPen(QColor(255, 255, 255, 100), 1)   # regular beat: thin dim white
+
 _WINDOW_BEATS = 16
 
 
@@ -146,43 +151,56 @@ class BeatGridWidget(QWidget):
             px_per_beat  = W / _WINDOW_BEATS
             half_w_samp  = (W / 2) * beat_len / px_per_beat
 
-            # ── 1. Waveform (vectorised, no loops) ──────────────
-            wf = deck.waveform
-            if wf is not None and len(wf) > 1:
-                self._paint_waveform(qp, d_idx, wf, pos, beat_len,
-                                     px_per_beat, cx, W, row_top, row_h)
-
-            # ── 2. Beat grid ticks — use actual beat array to avoid drift ──
             vis_lo = pos - half_w_samp
             vis_hi = pos + half_w_samp
             dbo    = int(getattr(deck, 'downbeat_offset', 0) or 0)
             beats  = deck.beats
 
+            def _draw_beats():
+                if beats is not None and len(beats) >= 2:
+                    i0 = max(0, int(np.searchsorted(beats, vis_lo)) - 1)
+                    for j in range(i0, len(beats)):
+                        bp = beats[j]
+                        if bp > vis_hi:
+                            break
+                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        if 0 <= px < W:
+                            _draw_tick(qp, px, row_top, row_h, (j + dbo) % 4 == 0, col)
+                else:
+                    rel_start  = vis_lo - first_beat
+                    beat_start = max(0, int(rel_start / beat_len) - 1)
+                    for i in range(beat_start, beat_start + _WINDOW_BEATS + 4):
+                        bp = first_beat + i * beat_len
+                        if bp > vis_hi:
+                            break
+                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        if 0 <= px < W:
+                            _draw_tick(qp, px, row_top, row_h, (i + dbo) % 4 == 0, col)
+
+            # ── 1. Beat grid (behind waveform so waveform renders over beats) ─
+            _draw_beats()
+
+            # ── 2. Waveform ──────────────────────────────────────────────────
+            wf = deck.waveform
+            if wf is not None and len(wf) > 1:
+                self._paint_waveform(qp, d_idx, wf, pos, beat_len,
+                                     px_per_beat, cx, W, row_top, row_h)
+
+            # ── 3. Bar markers on top — only the bright glow line ────────────
+            # Re-draw bar markers on top of the waveform so they're always visible
             if beats is not None and len(beats) >= 2:
-                # Binary search to the first beat in the visible window
                 i0 = max(0, int(np.searchsorted(beats, vis_lo)) - 1)
                 for j in range(i0, len(beats)):
                     bp = beats[j]
                     if bp > vis_hi:
                         break
-                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    if 0 <= px < W:
-                        _draw_tick(qp, px, row_top, row_h, (j + dbo) % 4 == 0, col)
-            else:
-                # Fallback: uniform grid from first_beat + bpm
-                vis_lo_fb  = pos - half_w_samp
-                vis_hi_fb  = pos + half_w_samp
-                rel_start  = vis_lo_fb - first_beat
-                beat_start = max(0, int(rel_start / beat_len) - 1)
-                for i in range(beat_start, beat_start + _WINDOW_BEATS + 4):
-                    bp = first_beat + i * beat_len
-                    if bp > vis_hi_fb:
-                        break
-                    px = int(cx + (bp - pos) / beat_len * px_per_beat)
-                    if 0 <= px < W:
-                        _draw_tick(qp, px, row_top, row_h, (i + dbo) % 4 == 0, col)
+                    if (j + dbo) % 4 == 0:
+                        px = int(cx + (bp - pos) / beat_len * px_per_beat)
+                        if 0 <= px < W:
+                            qp.setPen(_BEAT_BAR_PEN)
+                            qp.drawLine(px, row_top, px, row_top + row_h)
 
-            # ── 3. BPM / role label ──────────────────────────────
+            # ── 4. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master
                     else ("SYNC" if deck.sync_follower else ""))
             txt  = f"{label}  {eff_bpm:.1f}"
@@ -270,19 +288,17 @@ class BeatGridWidget(QWidget):
 
 def _draw_tick(qp: QPainter, px: int, row_top: int, row_h: int,
                is_bar: bool, col: QColor):
-    """Serato-style edge ticks — never obscure the waveform."""
+    bot = row_top + row_h
     if is_bar:
-        # Bar: tall edge marks (top + bottom), thin centre hairline
-        mark = row_h // 3
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 220), 2))
-        qp.drawLine(px, row_top,              px, row_top + mark)
-        qp.drawLine(px, row_top + row_h - mark, px, row_top + row_h)
-        # faint centre hairline so you can see bar boundary through the waveform
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 35), 1))
-        qp.drawLine(px, row_top + mark, px, row_top + row_h - mark)
+        # Soft glow pass behind the bar line
+        qp.setPen(_BEAT_BAR_GLOW)
+        qp.drawLine(px, row_top, px, bot)
+        # Bright white bar line — full height, waveform visible underneath via alpha
+        qp.setPen(_BEAT_BAR_PEN)
+        qp.drawLine(px, row_top, px, bot)
     else:
-        # Beat: small edge nubs only
-        nub = row_h // 6
-        qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 110), 1))
-        qp.drawLine(px, row_top,                px, row_top + nub)
-        qp.drawLine(px, row_top + row_h - nub,  px, row_top + row_h)
+        # Regular beat: half-height white hairline, vertically centred
+        beat_h = row_h // 2
+        ty = row_top + (row_h - beat_h) // 2
+        qp.setPen(_BEAT_PEN)
+        qp.drawLine(px, ty, px, ty + beat_h)
