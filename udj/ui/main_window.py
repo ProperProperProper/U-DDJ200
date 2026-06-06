@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                              QSplitter, QStatusBar, QLabel)
+                              QSplitter, QStatusBar, QLabel, QPushButton)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
@@ -19,6 +19,7 @@ from .deck_widget import DeckWidget
 from .mixer_widget import MixerWidget
 from .library_widget import LibraryWidget
 from .beat_grid_widget import BeatGridWidget
+from .dev_log import DevLogWindow
 
 
 class MainWindow(QMainWindow):
@@ -27,6 +28,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("U-DJ")
         self.setMinimumSize(1400, 820)
         self.resize(1500, 900)
+
+        # ── Dev log (install first so all engine/MIDI errors are captured) ──
+        self._dev_log = DevLogWindow()
+        self._dev_log.install()
 
         # ── Engine & MIDI ──────────────────────────────────
         self.engine = AudioEngine()
@@ -46,6 +51,22 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         self._midi_status = QLabel("Controller: searching…")
         sb.addPermanentWidget(self._midi_status)
+
+        log_btn = QPushButton("DEV LOG")
+        log_btn.setCheckable(True)
+        log_btn.setFixedHeight(18)
+        log_btn.setStyleSheet(
+            "QPushButton{background:transparent;border:1px solid #222230;"
+            "border-radius:2px;color:#2a2a40;font-size:8px;font-weight:bold;"
+            "letter-spacing:2px;padding:0 6px;}"
+            "QPushButton:hover{color:#555568;border-color:#33334a;}"
+            "QPushButton:checked{color:#ffaa00;border-color:#ffaa00;}")
+        log_btn.toggled.connect(
+            lambda on: self._dev_log.show() if on else self._dev_log.hide())
+        self._dev_log.destroyed.connect(lambda: log_btn.setChecked(False))
+        sb.addWidget(log_btn)
+        self._log_btn = log_btn
+
         QTimer.singleShot(500, self._check_midi)
 
         # Analyse only tracks missing BPM/grid/stems — never overwrite good data
