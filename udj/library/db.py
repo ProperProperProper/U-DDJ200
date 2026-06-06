@@ -85,6 +85,39 @@ def init_db():
                 pass
         con.execute("CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_bpm    ON tracks(bpm)")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS stem_inspections (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                path        TEXT NOT NULL,
+                inspected_at REAL NOT NULL,
+                metrics_json TEXT NOT NULL,
+                fixes_json   TEXT NOT NULL
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_insp_path ON stem_inspections(path)")
+        con.commit()
+
+
+def log_stem_inspection(path: str, metrics_before: dict, metrics_after: dict):
+    import json, time
+    fixes = {}
+    for key in ["cross_contamination_0_to_1"]:
+        b = metrics_before.get(key, {})
+        a = metrics_after.get(key, {})
+        fixes[key] = {label: {"before": b[label], "after": a.get(label, b[label])}
+                      for label in b}
+    for stem in ["drums", "bass", "other", "vocals"]:
+        bm = metrics_before.get("stems", {}).get(stem, {})
+        am = metrics_after.get("stems", {}).get(stem, {})
+        if bm:
+            fixes[stem] = {band: {"before": bm[band], "after": am.get(band, bm[band])}
+                           for band in bm}
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO stem_inspections (path, inspected_at, metrics_json, fixes_json) "
+            "VALUES (?, ?, ?, ?)",
+            (path, time.time(), json.dumps(metrics_before), json.dumps(fixes))
+        )
         con.commit()
 
 

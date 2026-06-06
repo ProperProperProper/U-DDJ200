@@ -310,9 +310,24 @@ def auto_fix_stems(stems: dict, metrics: dict, sr: int) -> dict:
 
     bas_oth = cc.get("bass leaking into synths", 0.0)
     if bas_oth >= _CONTAMINATION_WARN and "other" in fixed:
-        # Extra HP pass scaled to bleed severity
         hp_hz = 200 + min(int((bas_oth - _CONTAMINATION_WARN) / 0.65 * 120), 120)
         fixed["other"] = _hp(fixed["other"], hp_hz, order=8)
+
+    drm_oth = cc.get("drums leaking into synths", 0.0)
+    if drm_oth >= _CONTAMINATION_WARN and "other" in fixed:
+        # Drum bleed into synths is transient/rhythmic — suppress fast-attack events
+        alpha = min(0.3 + (drm_oth - _CONTAMINATION_WARN) * 0.8, 0.7)
+        from udj.core.stems import _rms_envelope
+        out = fixed["other"].copy().astype(np.float64)
+        for ch in range(2):
+            sig      = out[:, ch]
+            env_fast = _rms_envelope(sig, 2.0,  44100)
+            env_slow = _rms_envelope(sig, 80.0, 44100)
+            transient = np.maximum(env_fast - env_slow, 0.0)
+            total     = env_fast + 1e-9
+            mask      = np.clip(alpha * (transient / total), 0.0, 0.75)
+            out[:, ch] = sig * (1.0 - mask)
+        fixed["other"] = out.astype(np.float32)
 
     return fixed
 
@@ -352,15 +367,8 @@ def _flag(score: float, warn: float, bad: float) -> str:
 def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
     lines = []
 
-    for entry in all_metrics:
-        # Accept either a plain metrics dict or a (before, after) tuple
-        if isinstance(entry, tuple):
-            metrics_before, metrics_after = entry
-        else:
-            metrics_before = entry
-            metrics_after  = None
-
-        metrics = metrics_before
+    for metrics in all_metrics:
+        metrics_after = metrics.get("_after")
         track  = metrics["track"]
         stems  = metrics["stems"]
         contam = metrics["cross_contamination_0_to_1"]

@@ -435,11 +435,14 @@ class _InspectWorker(QObject):
                     if stem_name in deck.stems:
                         deck.stems[stem_name][:n] = arr
                 from ..core.stems import _cache_path, _save_cache
+                from ..library.db import log_stem_inspection
                 _save_cache(fixed, _cache_path(path))
+                log_stem_inspection(path, metrics_before, metrics_after)
 
                 metrics_after = mod.compute_metrics(fixed, orig, sr, name)
+                metrics_before["_after"] = metrics_after
                 spec_png = mod.make_spectrogram(fixed, sr, name)
-                all_metrics.append((metrics_before, metrics_after))
+                all_metrics.append(metrics_before)
                 all_specs.append(spec_png)
             analysis = mod.analyse_with_claude(all_metrics, all_specs)
             self.finished.emit(analysis)
