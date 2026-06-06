@@ -44,7 +44,6 @@ BUFFER_SIZE = 512
 _PHASE_DEAD      = 0.001   # dead-zone: ~0.46ms at 130BPM
 _PHASE_NUDGE_CAP = 0.04    # max nudge per callback: 4% of beat (~18ms at 130bpm)
 _NUDGE_GAIN      = 0.8     # proportional gain
-_SNAP_RATE_THR   = 0.003   # re-snap when master rate changes > 0.3%
 
 
 def _detect_native_sr() -> int:
@@ -187,7 +186,7 @@ class AudioEngine:
 
         self.auto_sync              = False
         self._was_playing           = [False] * NUM_DECKS
-        self._last_master_rate      = [None, None]   # per-follower: detect master rate jump
+        self._last_master_rate      = [None, None]   # reserved
         self._sync_log_tick         = 0               # throttle sync logging to ~1 Hz
         self._phrase_sync_triggered = False           # read by mixer_widget via getattr to flash PHRASE SYNC btn
 
@@ -291,20 +290,19 @@ class AudioEngine:
                 continue
 
             # ALWAYS hard-lock rate to nominal — zero tempo wobble.
+            # follower.rate tracks master_eff_bpm every callback, so the follower
+            # immediately matches master tempo whenever the slider moves.
             follower_key_ratio = 2.0 ** (getattr(follower, 'key_shift', 0) / 12.0)
             nominal = (master_eff_bpm / follower.bpm) / follower_key_ratio
             follower.rate = max(0.5, min(2.0, nominal))
 
-            # Detect master rate change (tempo slider moved)
-            prev = self._last_master_rate[f_idx]
-            rate_jumped = (prev is not None and abs(master.rate - prev) > _SNAP_RATE_THR)
-            self._last_master_rate[f_idx] = master.rate
-
-            # One-shot snap on play-start or tempo change only.
-            # Master-switch snaps are handled explicitly by snap_sync().
-            if just_started or rate_jumped:
-                reason = "play-start" if just_started else f"rate-jump({prev:.4f}→{master.rate:.4f})"
-                print(f"[SNAP] D{f_idx+1} {reason}  bar_phase={m_bar_phase:.3f}")
+            # One-shot bar-phase snap on play-start only.
+            # DO NOT snap on rate/tempo change — the rate is already updated above
+            # every callback, so the follower tracks instantly. Snapping on rate
+            # change caused _do_snap() to fire on every callback while the slider
+            # was moving (~86×/s), hard-jumping the follower position each time.
+            if just_started:
+                print(f"[SNAP] D{f_idx+1} play-start  bar_phase={m_bar_phase:.3f}")
                 self._do_snap(master, follower, master_bar, m_bar_phase)
                 continue
 
