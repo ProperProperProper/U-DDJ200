@@ -15,7 +15,7 @@ from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
 import psutil as _psutil
-from ..library.db import all_tracks, init_db, clear_library, stems_are_cached, get_setting, set_setting
+from ..library.db import all_tracks, init_db, clear_library, stems_are_cached, get_setting, set_setting, clear_stems_cache
 from ..library.scanner import scan_directory
 
 
@@ -214,6 +214,18 @@ class LibraryWidget(QWidget):
         )
         self._btn_clear.clicked.connect(self._clear_db)
 
+        self._btn_clear_cache = QPushButton("⊘ Clear Stems Cache")
+        self._btn_clear_cache.setObjectName("BtnScan")
+        self._btn_clear_cache.setToolTip(
+            "Delete all cached stem files (~/.udj/stems/) and reset stems flags.\n"
+            "Use this to force re-separation with the latest pipeline.")
+        self._btn_clear_cache.setStyleSheet(
+            "QPushButton{background:#111;border:1px solid #2a2a1a;color:#aaaa44;"
+            "border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold;}"
+            "QPushButton:hover{border:1px solid #cccc44;color:#ffff66;}"
+        )
+        self._btn_clear_cache.clicked.connect(self._clear_stems_cache)
+
         self._cpu_label = QLabel("")
         self._cpu_label.setVisible(False)
         self._cpu_label.setFixedWidth(72)
@@ -229,6 +241,7 @@ class LibraryWidget(QWidget):
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
         bar.addWidget(self._btn_clear)
+        bar.addWidget(self._btn_clear_cache)
         bar.addWidget(self._btn_stems_inspect)
         bar.addWidget(self._btn_inspect_all)
         bar.addWidget(self._btn_d1)
@@ -275,6 +288,13 @@ class LibraryWidget(QWidget):
     def _clear_db(self):
         clear_library()
         self._model.reload()
+
+    def _clear_stems_cache(self):
+        count = clear_stems_cache()
+        self._model.reload()
+        QMessageBox.information(self, "Stems Cache Cleared",
+                                f"Deleted {count} cached stem file(s).\n"
+                                "Stems will be re-separated on next track load.")
 
     def _scan(self):
         folder = QFileDialog.getExistingDirectory(

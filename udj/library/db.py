@@ -242,6 +242,21 @@ def mark_stems_failed(path: str):
         con.execute("UPDATE tracks SET stems_failed=1 WHERE path=?", (path,))
         con.commit()
 
+def clear_stems_cache() -> int:
+    """Delete all .npz stem cache files and reset stems flags in DB. Returns file count deleted."""
+    count = 0
+    if STEMS_DIR.exists():
+        for f in STEMS_DIR.glob("*.npz"):
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    with _conn() as con:
+        con.execute("UPDATE tracks SET stems_cached=0, stems_failed=0")
+        con.commit()
+    return count
+
 def get_track(path: str) -> Optional[dict]:
     with _conn() as con:
         row = con.execute("SELECT * FROM tracks WHERE path = ?",
