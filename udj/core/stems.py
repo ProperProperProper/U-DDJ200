@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v14"  # v14: OTHER hp 200Hz, vocals presence -1.5dB, drum→voc alpha 0.75/2kHz
+STEMS_VERSION = "v15"  # v15: Roformer-first pipeline — vocals from Roformer, drums/bass/other from demucs on instrumental
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -77,7 +77,11 @@ def _preanalyse_worker(file_path, sample_rate, track_meta, on_done):
                     on_done(file_path)
                 return
             cache_path.unlink(missing_ok=True)
-        result = _separate_demucs(file_path, sample_rate, track_meta)
+        try:
+            result = _separate_roformer_first(file_path, sample_rate, track_meta)
+        except Exception as _rf_err:
+            print(f"[Stems] Roformer-first unavailable ({_rf_err}) — falling back to demucs")
+            result = _separate_demucs(file_path, sample_rate, track_meta)
         _save_cache(result, cache_path)
         from ..library.db import mark_stems_cached
         mark_stems_cached(file_path)
@@ -154,7 +158,7 @@ def _worker(file_path, sample_rate, on_done, on_error, track_meta):
                 else:
                     print(f"[Stems] WAV cache found but load failed: {pathlib.Path(file_path).name}")
             else:
-                print(f"[Stems] no WAV cache for {pathlib.Path(file_path).name} — running demucs")
+                print(f"[Stems] no WAV cache for {pathlib.Path(file_path).name} — running Roformer-first pipeline")
         except Exception as _sa_err:
             print(f"[Stems] stem_analyzer import failed: {_sa_err} — falling back to .npz")
 
@@ -167,14 +171,18 @@ def _worker(file_path, sample_rate, on_done, on_error, track_meta):
                 return
             # Version mismatch — delete stale cache and re-run
             cache.unlink(missing_ok=True)
-        print(f"[Stems] running demucs htdemucs_ft (will cache result)")
-        result = _separate_demucs(file_path, sample_rate, track_meta)
+        try:
+            print(f"[Stems] Roformer-first pipeline (will cache result)")
+            result = _separate_roformer_first(file_path, sample_rate, track_meta)
+        except Exception as _rf_err:
+            print(f"[Stems] Roformer-first unavailable ({_rf_err}) — falling back to demucs")
+            result = _separate_demucs(file_path, sample_rate, track_meta)
         _save_cache(result, cache)
         from ..library.db import mark_stems_cached
         mark_stems_cached(file_path)
         on_done(result)
     except Exception as e:
-        print(f"[Stems] demucs failed ({e}), falling back to DSP approximation")
+        print(f"[Stems] separation failed ({e}), falling back to DSP approximation")
         try:
             import soundfile as sf
             audio, sr = sf.read(file_path, dtype="float32", always_2d=True)
@@ -193,94 +201,153 @@ def _worker(file_path, sample_rate, on_done, on_error, track_meta):
 
 # ─── demucs separation ────────────────────────────────────────────────────────
 
-def _separate_demucs(file_path: str, target_sr: int,
-                     track_meta: Optional[dict]) -> dict:
+def _demucs_raw_stems(file_path: str, target_sr: int) -> dict[str, np.ndarray]:
+    """
+    Run htdemucs_ft on file_path and return raw (N, 2) float32 stems trimmed to
+    the same length. No post-processing — caller handles that.
+    """
     import torch
     import torchaudio
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
 
-    # Apple Silicon MPS — dramatically faster than CPU
     if torch.backends.mps.is_available():
         device = "mps"
     elif torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
-    print(f"[Stems] using device={device}")
+    print(f"[Stems] demucs device={device}")
 
-    # htdemucs_ft: fine-tuned 4-stem (drums, bass, other, vocals) — fastest quality model.
-    # htdemucs_6s is slower (6 output heads) with minimal quality gain for electronic music
-    # where "guitar" and "piano" are synths anyway.
     try:
         model = get_model("htdemucs_ft")
-        print("[Stems] using htdemucs_ft (fine-tuned 4-stem)")
+        print("[Stems] htdemucs_ft (fine-tuned 4-stem)")
     except Exception:
         model = get_model("htdemucs")
-        print("[Stems] using htdemucs (standard 4-stem)")
+        print("[Stems] htdemucs (standard 4-stem)")
     model.eval()
 
     wav, sr = torchaudio.load(file_path)
     if wav.shape[0] == 1:
         wav = wav.repeat(2, 1)
     wav = wav[:2]
-
     model_sr = model.samplerate
     if sr != model_sr:
         wav = torchaudio.functional.resample(wav, sr, model_sr)
 
-    # shifts=1, overlap=0.25 (demucs default) — fastest settings that still sound clean.
-    # overlap=0.5 was 2× slower with no audible benefit on MPS.
     with torch.no_grad():
         sources = apply_model(
-            model,
-            wav.unsqueeze(0),
+            model, wav.unsqueeze(0),
             device=device,
-            shifts=4,      # 4-pass phase averaging — maximum quality for drums/bass
+            shifts=4,
             overlap=0.25,
             progress=False,
-        )[0]   # (num_stems, 2, N)
+        )[0]
 
-    stem_names = model.sources   # e.g. ["drums","bass","other","vocals"] or +["guitar","piano"]
     raw_stems: dict[str, np.ndarray] = {}
-    for i, name in enumerate(stem_names):
+    for i, name in enumerate(model.sources):
         stem_wav = sources[i]
         if model_sr != target_sr:
             stem_wav = torchaudio.functional.resample(stem_wav, model_sr, target_sr)
-        arr = stem_wav.cpu().numpy().T.astype(np.float32)   # (N, 2)
+        arr = stem_wav.cpu().numpy().T.astype(np.float32)
         raw_stems[name] = np.ascontiguousarray(arr)
 
-    # Load original audio for level reference
+    n = min(len(v) for v in raw_stems.values())
+    return {k: v[:n] for k, v in raw_stems.items()}
+
+
+def _separate_roformer_first(file_path: str, target_sr: int,
+                              track_meta: Optional[dict]) -> dict:
+    """
+    Primary separation pipeline: MelBand Roformer for vocals, demucs for drums/bass/other.
+
+    1. Roformer InstVoc Duality V2 → clean vocals + instrumental (vocal-free mix)
+    2. demucs htdemucs_ft on the instrumental → drums, bass, other
+       (demucs vocals output discarded — Roformer already handled it)
+    3. Shared Wiener refinement + per-stem post-processing on all 4 stems
+
+    Running demucs on the vocal-free instrumental gives cleaner drums/bass/other
+    because all vocal energy is already removed before demucs sees the signal.
+
+    Raises RuntimeError if audio-separator is not installed — caller falls back to demucs.
+    """
+    import tempfile, logging
     import soundfile as sf
+    from audio_separator.separator import Separator
+
+    print("[Stems] Roformer-first: separating vocals + instrumental...")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sep = Separator(output_dir=tmp, output_format="WAV", log_level=logging.WARNING)
+        sep.load_model("MelBand Roformer Kim | InstVoc Duality V2 by Unwa")
+        out_files = sep.separate(file_path)
+
+        vocals_file = next((f for f in out_files if "Vocals"       in f or "vocals"       in f), None)
+        instr_file  = next((f for f in out_files if "Instrumental" in f or "instrumental" in f), None)
+        if not vocals_file or not instr_file:
+            raise RuntimeError(f"Roformer output incomplete: {out_files}")
+
+        print("[Stems] Roformer vocals done — running demucs on instrumental...")
+        instr_raw = _demucs_raw_stems(instr_file, target_sr)
+
+        voc_audio, voc_sr = sf.read(vocals_file, dtype="float32", always_2d=True)
+        if voc_audio.shape[1] == 1:
+            voc_audio = np.repeat(voc_audio, 2, axis=1)
+        if voc_sr != target_sr:
+            from math import gcd
+            from scipy.signal import resample_poly
+            g = gcd(voc_sr, target_sr)
+            voc_audio = resample_poly(voc_audio, target_sr // g, voc_sr // g).astype(np.float32)
+    # temp dir cleaned up here — audio is loaded into memory above
+
+    # Combine: Roformer vocals + demucs drums/bass/other from the instrumental
+    n = min(len(voc_audio), min(len(v) for v in instr_raw.values()))
+    raw_stems: dict[str, np.ndarray] = {k: instr_raw[k][:n] for k in ["drums", "bass", "other"]}
+    raw_stems["vocals"] = voc_audio[:n]
+
+    # Load original for level calibration reference
     orig, orig_sr = sf.read(file_path, dtype="float32", always_2d=True)
     if orig.shape[1] == 1:
         orig = np.repeat(orig, 2, axis=1)
     if orig_sr != target_sr:
         from math import gcd
         from scipy.signal import resample_poly
-        g   = gcd(orig_sr, target_sr)
+        g = gcd(orig_sr, target_sr)
+        orig = resample_poly(orig, target_sr // g, orig_sr // g).astype(np.float32)
+    orig = orig[:n]
+
+    raw_stems = _wiener_refine(raw_stems, target_sr)
+    processed  = _post_process_stems(raw_stems, target_sr, orig, track_meta)
+    processed["_vocal_present"] = _detect_vocal_presence(raw_stems["vocals"], orig)
+
+    return processed
+
+
+def _separate_demucs(file_path: str, target_sr: int,
+                     track_meta: Optional[dict]) -> dict:
+    """
+    Fallback separation pipeline: full demucs 4-stem on the original mix.
+    Used when audio-separator / Roformer is not installed.
+    """
+    import soundfile as sf
+
+    raw_stems = _demucs_raw_stems(file_path, target_sr)
+
+    orig, orig_sr = sf.read(file_path, dtype="float32", always_2d=True)
+    if orig.shape[1] == 1:
+        orig = np.repeat(orig, 2, axis=1)
+    if orig_sr != target_sr:
+        from math import gcd
+        from scipy.signal import resample_poly
+        g = gcd(orig_sr, target_sr)
         orig = resample_poly(orig, target_sr // g, orig_sr // g).astype(np.float32)
 
-    # Trim to same length (demucs may pad)
     n = min(len(orig), min(len(v) for v in raw_stems.values()))
-    orig = orig[:n]
+    orig      = orig[:n]
     raw_stems = {k: v[:n] for k, v in raw_stems.items()}
 
-    # Replace demucs vocals with MelBand Roformer if available — state-of-art isolation.
-    roformer_vocals = _roformer_vocals(file_path, target_sr, n)
-    if roformer_vocals is not None:
-        raw_stems["vocals"] = roformer_vocals
-        print("[Stems] Roformer vocals → replacing demucs vocals")
-    else:
-        print("[Stems] Roformer unavailable — using demucs vocals")
-
-    # Wiener soft-mask refinement — reduce inter-stem bleed before DSP
     raw_stems = _wiener_refine(raw_stems, target_sr)
-
-    # Post-process each stem with techno-tuned DSP chain
-    processed = _post_process_stems(raw_stems, target_sr, orig, track_meta)
-
-    # Detect instrumental / vocal-absent tracks → return flag alongside stems
+    processed  = _post_process_stems(raw_stems, target_sr, orig, track_meta)
     processed["_vocal_present"] = _detect_vocal_presence(
         raw_stems.get("vocals", np.zeros((1024, 2), dtype=np.float32)), orig)
 
@@ -541,9 +608,8 @@ def _process_bass(audio: np.ndarray, sr: int, lufs: float) -> np.ndarray:
 def _process_other(audio: np.ndarray, sr: int) -> np.ndarray:
     """
     Other / synths — dance/techno tuning:
-    - Hard HP 150 Hz (10th-order): steeper than 120 Hz 8th-order — drums→synths bleed 0.71-0.91
-      is not just spectral, it is rhythmic/transient content; the steeper slope helps but the
-      transient suppressor below is the primary fix
+    - Hard HP 200 Hz (10th-order): drums→synths bleed is rhythmic/transient, not spectral;
+      the steeper slope helps but the transient suppressor below is the primary fix
     - Transient suppressor (de-transient): subtract alpha * transient_component to kill
       drum hits that leaked through demucs. Targets fast-attack events (< 5ms) that are
       drum transients, not synth attacks.
@@ -660,51 +726,6 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64[:, 1] *= gate
 
     return audio64.astype(np.float32)
-
-
-def _roformer_vocals(file_path: str, target_sr: int, n_samples: int) -> "np.ndarray | None":
-    """
-    Run MelBand Roformer Kim InstVoc Duality V2 to get cleaner vocals than demucs.
-    This model is 2024 state-of-the-art for vocal isolation — trained specifically
-    for clean extraction of vocals (including short samples/stabs used in techno).
-    Falls back to None if audio-separator is not available.
-    """
-    import tempfile, logging
-    import soundfile as sf
-    try:
-        from audio_separator.separator import Separator
-        print("[Stems] running MelBand Roformer for vocals (state-of-art isolation)")
-        with tempfile.TemporaryDirectory() as tmp:
-            sep = Separator(
-                output_dir=tmp,
-                output_format="WAV",
-                log_level=logging.WARNING,
-            )
-            # MelBand Roformer Kim InstVoc Duality V2 — best publicly available vocal model
-            sep.load_model("MelBand Roformer Kim | InstVoc Duality V2 by Unwa")
-            out_files = sep.separate(file_path)
-            # Find the vocals file (Duality outputs Vocals + Instrumental)
-            vocals_file = next(
-                (f for f in out_files if "Vocals" in f or "vocals" in f), None)
-            if vocals_file is None:
-                print("[Stems] Roformer: no vocals file in output")
-                return None
-            audio, sr = sf.read(vocals_file, dtype="float32", always_2d=True)
-            if audio.shape[1] == 1:
-                audio = np.repeat(audio, 2, axis=1)
-            if sr != target_sr:
-                from math import gcd
-                from scipy.signal import resample_poly
-                g = gcd(sr, target_sr)
-                audio = resample_poly(audio, target_sr // g, sr // g).astype(np.float32)
-            # Trim to match demucs length
-            audio = audio[:n_samples]
-            if len(audio) < n_samples:
-                audio = np.pad(audio, ((0, n_samples - len(audio)), (0, 0)))
-            return np.ascontiguousarray(audio.astype(np.float32))
-    except Exception as e:
-        print(f"[Stems] Roformer vocals failed ({e}) — using demucs vocals")
-        return None
 
 
 def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,

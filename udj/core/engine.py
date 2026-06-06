@@ -185,10 +185,11 @@ class AudioEngine:
         self.vu_peak       = [0.0] * NUM_DECKS
         self.master_peak   = [0.0, 0.0]
 
-        self.auto_sync         = False
-        self._was_playing      = [False] * NUM_DECKS
-        self._last_master_rate = [None, None]   # per-follower: detect master rate jump
-        self._sync_log_tick    = 0               # throttle sync logging to ~1 Hz
+        self.auto_sync              = False
+        self._was_playing           = [False] * NUM_DECKS
+        self._last_master_rate      = [None, None]   # per-follower: detect master rate jump
+        self._sync_log_tick         = 0               # throttle sync logging to ~1 Hz
+        self._phrase_sync_triggered = False
 
     # ── stream ────────────────────────────────────────────────
 

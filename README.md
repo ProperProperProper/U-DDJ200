@@ -9,7 +9,7 @@ Professional DJ app for macOS. Built for **Detroit techno, house, trance and dan
 ## Setup
 
 1. Connect DDJ-200 via USB **before** launching
-2. Open `U-DJ.app` from your Desktop
+2. Open `U-DJ.app` from Applications
 3. Click **+ Add Folder** → select your music folder
 4. Tracks analyse automatically in the background
 5. Drag a track onto each deck or double-click to load
@@ -144,19 +144,26 @@ Manual loop: **Shift + SYNC** → set loop IN, **SYNC** → set loop OUT.
 
 ## Stems — How It Works
 
-U-DJ uses **htdemucs_ft** (demucs ML model, Apple Silicon MPS accelerated) to separate tracks into 4 stems. Post-processing is tuned specifically for **Detroit techno / electronic music**:
+U-DJ uses a two-model pipeline tuned specifically for **Detroit techno / electronic music**:
 
-| Stem | What it contains | Post-processing |
-|------|-----------------|-----------------|
-| **VOC** | Vocal samples, stabs | HP 100Hz, tight gate -20dBFS, presence +3dB 1.5-4kHz |
-| **BASS** | Bassline, 303 acid | LP 1200Hz (keeps acid squeal), sub +3dB, mono <120Hz |
-| **DRM** | Kick, snare, hats | HP 30Hz (preserves kick body), transient boost, hat air +3dB >10kHz |
-| **SYNTH** | Synths, pads, leads | 8th-order HP 120Hz (kills bass bleed), presence +2dB |
+**1. MelBand Roformer** (InstVoc Duality V2) → clean vocal stem + vocal-free instrumental  
+**2. demucs htdemucs_ft** (Apple Silicon MPS) → drums, bass, other — run on the vocal-free instrumental so no vocal energy bleeds into those stems
 
-Post-separation: **Wiener soft-mask refinement** (STFT 4096/hop 1024) sharpens TF-bin separation. Adaptive vocal gate at 30th percentile. Drum bleed from hats (moderate correlation only) removed via mild shelf cut. High drums→synths / drums→vocals correlation on dance tracks is rhythmic co-occurrence — no DSP applied.
+Running demucs on the instrumental rather than the full mix gives cleaner drums and bass because the model never has to fight vocal energy.
 
-**First separation:** ~90 seconds on Apple Silicon M-series  
-**Subsequent loads:** instant from cache (`~/udj_cache/`)
+| Stem | Source model | Post-processing |
+|------|-------------|-----------------|
+| **VOC** | MelBand Roformer | HP 180Hz, adaptive gate at 30th-percentile RMS, presence +1.5dB 1.5–4kHz |
+| **BASS** | demucs (on instrumental) | LP 900Hz (keeps 303 acid squeal 400–900Hz), sub +3dB, mono <120Hz |
+| **DRM** | demucs (on instrumental) | HP 30Hz (preserves kick body), transient boost, sub-kick +4dB 55–105Hz, hat air +3dB >10kHz |
+| **SYNTH** | demucs (on instrumental) | 10th-order HP 200Hz (kills bass bleed), transient suppressor, presence +2dB 2–6kHz, air +1.5dB >12kHz |
+
+Post-separation: **Wiener soft-mask refinement** (STFT 4096/hop 1024) sharpens TF-bin separation across all four stems. Drum bleed removed from vocals via spectral subtraction above 2kHz. Level calibrated so stem sum matches original RMS.
+
+If `audio-separator` is not installed, falls back to demucs full 4-stem separation on the original mix.
+
+**First separation:** ~2–4 minutes on Apple Silicon M-series (Roformer + demucs)  
+**Subsequent loads:** instant from cache (`~/.udj/stems/`)
 
 ---
 
@@ -311,9 +318,8 @@ python3 main.py
 
 ```bash
 python3 -m PyInstaller udj.spec --clean -y
-rm -rf ~/Desktop/U-DJ.app
-cp -R dist/U-DJ.app ~/Desktop/U-DJ.app
-open ~/Desktop/U-DJ.app
+cp -R dist/U-DJ.app /Applications/U-DJ.app
+open /Applications/U-DJ.app
 ```
 
 > Always use `--clean -y`. Never incremental builds.

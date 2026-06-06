@@ -5,6 +5,7 @@ that librosa's beat_track commonly produces on electronic music.
 """
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -58,7 +59,6 @@ def _detect_beats(y: np.ndarray, sr: int) -> tuple[float, float, list]:
        call beat_distance(position, beats) — exactly as Mixxx does — instead of
        computing (position − first_beat) % beat_len which accumulates float error.
     """
-    import json
     hop = 512
 
     # Spectral-flux onset envelope — Mixxx uses a similar low-freq-weighted approach
@@ -347,8 +347,6 @@ def _detect_cue_points(y: np.ndarray, sr: int, beats_sec: list,
     All times are snapped to the nearest bar boundary on the beat grid.
     Minimum separation: 8 bars between cues.
     """
-    import json
-
     if not beats_sec or bpm <= 0:
         return []
 
@@ -629,7 +627,6 @@ def _analyse(path: str) -> dict:
         sr = target_sr
         y  = mono
 
-        import json
         bpm, first_beat_sec, beat_list = _detect_beats(y, sr)
 
         # Downbeat offset: rotate beat grid so index%4==0 lands on beat 1

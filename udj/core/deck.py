@@ -5,6 +5,7 @@ Catmull-Rom (Hermite) interpolation — same as Mixxx cubic quality.
 """
 from __future__ import annotations
 
+import json
 import threading
 from math import gcd
 import numpy as np
@@ -12,10 +13,11 @@ import soundfile as sf
 from scipy.signal import resample_poly
 from typing import Optional, Callable
 from . import event_log
+from .stems import STEM_NAMES
+from .mixer import soft_limit
 
 NUM_HOT_CUES    = 8
 BEAT_LOOP_SIZES = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-STEM_NAMES      = ["drums", "bass", "other", "vocals"]
 _LOOP_XFADE     = 64   # samples crossfade at loop boundary
 
 # Quantize / pre-roll constants
@@ -109,18 +111,12 @@ class Deck:
         self.sync_master   = False
 
         # Stems — populated asynchronously after track load
-        self.stems: Optional[dict[str, np.ndarray]] = None
-        self.active_stems: set[str] = set(STEM_NAMES)
-        self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
-        self.stems_ready  = False
-        self._solo_stem:   Optional[str] = None
-
+        self._solo_stem: Optional[str] = None
         # Smooth stem fade — prevents clicks on toggle.
         # _stem_fade[s]        = current gain (0.0–1.0), updated each audio callback
         # _stem_fade_target[s] = where we're ramping to
         # Linear ramp over _STEM_FADE_SAMPLES samples (~10ms at 44100 Hz).
-        self._stem_fade:        dict[str, float] = {s: 1.0 for s in STEM_NAMES}
-        self._stem_fade_target: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
+        self._reset_stem_state()
 
         self.key_shift: int = 0   # semitones ±12; applied as playback rate multiplier
 
@@ -135,6 +131,15 @@ class Deck:
         self.on_play_state_changed: Optional[Callable] = None
         self.on_hot_cue_changed:    Optional[Callable] = None
         self.on_stems_ready:        Optional[Callable] = None
+
+    def _reset_stem_state(self):
+        """Reset all stem playback state — called on init and on each new track load."""
+        self.stems: Optional[dict[str, np.ndarray]] = None
+        self.stems_ready        = False
+        self.active_stems: set[str]        = set(STEM_NAMES)
+        self.stem_volumes: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
+        self._stem_fade:        dict[str, float] = {s: 1.0 for s in STEM_NAMES}
+        self._stem_fade_target: dict[str, float] = {s: 1.0 for s in STEM_NAMES}
 
     # ── Loading ───────────────────────────────────────────────
 
@@ -174,12 +179,7 @@ class Deck:
             self._loop_recording = False
             self.file_path    = path
             self.duration     = len(audio) / self.sample_rate
-            self.stems              = None
-            self.stems_ready        = False
-            self.active_stems       = set(STEM_NAMES)
-            self.stem_volumes       = {s: 1.0 for s in STEM_NAMES}
-            self._stem_fade         = {s: 1.0 for s in STEM_NAMES}
-            self._stem_fade_target  = {s: 1.0 for s in STEM_NAMES}
+            self._reset_stem_state()
             if metadata:
                 self.title  = metadata.get("title",  "")
                 self.artist = metadata.get("artist", "")
@@ -194,17 +194,16 @@ class Deck:
                 gain_db = float(metadata.get("gain_db", 0) or 0)
                 self.gain_linear = float(10.0 ** (gain_db / 20.0))
                 # Load stored beat grid (Mixxx-style: every beat position)
-                import json as _json
                 bp_json = metadata.get("beat_positions_json", "[]") or "[]"
                 try:
-                    bp_sec = _json.loads(bp_json)
+                    bp_sec = json.loads(bp_json)
                     self.beats = (np.array(bp_sec, dtype=np.float64) * self.sample_rate
                                   if bp_sec else None)
                 except Exception:
                     self.beats = None
                 ph_json = metadata.get("phrase_positions_json", "[]") or "[]"
                 try:
-                    ph_sec = _json.loads(ph_json)
+                    ph_sec = json.loads(ph_json)
                     self.phrases = (np.array(ph_sec, dtype=np.float64) * self.sample_rate
                                     if ph_sec else None)
                 except Exception:
@@ -213,7 +212,7 @@ class Deck:
                 # Load auto-detected cue points (MIK-style energy markers)
                 cq_json = metadata.get("cue_points_json", "[]") or "[]"
                 try:
-                    for cue in _json.loads(cq_json):
+                    for cue in json.loads(cq_json):
                         pad = int(cue.get("pad", 0))
                         sec = float(cue.get("sec", 0.0))
                         if 0 <= pad < NUM_HOT_CUES:
@@ -665,15 +664,7 @@ class Deck:
 
                     out += _hermite(self.stems[s]) * gain_curve[:, np.newaxis]
 
-                # Transparent soft limiter — tanh knee above 0.85
-                thr = 0.85
-                over = np.abs(out) > thr
-                if over.any():
-                    knee = 1.0 - thr
-                    sign = np.sign(out[over])
-                    out[over] = sign * (thr + knee * np.tanh(
-                        (np.abs(out[over]) - thr) / knee))
-                out = out.astype(np.float32)
+                out = soft_limit(out)
             else:
                 out = _hermite(audio)
 
