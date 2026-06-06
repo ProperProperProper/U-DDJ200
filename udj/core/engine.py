@@ -189,7 +189,7 @@ class AudioEngine:
         self._was_playing           = [False] * NUM_DECKS
         self._last_master_rate      = [None, None]   # per-follower: detect master rate jump
         self._sync_log_tick         = 0               # throttle sync logging to ~1 Hz
-        self._phrase_sync_triggered = False
+        self._phrase_sync_triggered = False           # read by mixer_widget via getattr to flash PHRASE SYNC btn
 
     # ── stream ────────────────────────────────────────────────
 
@@ -492,7 +492,7 @@ class AudioEngine:
 
     # ── Audio callback ────────────────────────────────────────
 
-    def _callback(self, outdata: np.ndarray, frames: int, time, status):
+    def _callback(self, outdata: np.ndarray, frames: int, _time, _status):
         try:
             self._apply_sync()
             # Feed current BPM to beat-aware effects (Echo, Roll)

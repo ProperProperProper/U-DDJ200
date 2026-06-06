@@ -6,7 +6,6 @@ Layout: [Deck 1] [Mixer] [Deck 2]
 from __future__ import annotations
 
 
-import sys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QSplitter, QStatusBar, QLabel, QPushButton)
 from PyQt6.QtCore import Qt, QTimer

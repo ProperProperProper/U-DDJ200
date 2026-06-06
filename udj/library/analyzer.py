@@ -555,55 +555,6 @@ def _detect_phrases(y: np.ndarray, sr: int, beats_sec: list, hop: int = 512) -> 
     return sorted(set(round(t, 4) for t in phrases))
 
 
-def _detect_bpm(y: np.ndarray, sr: int) -> float:
-    """
-    Robust BPM detection for DJ music (house/techno/drum&bass etc.).
-
-    Strategy:
-    1. Compute onset strength envelope.
-    2. Get autocorrelation-based tempo estimate (librosa.beat.tempo).
-    3. Build candidate set: base tempo plus halvings/doublings that fall
-       in the 80–185 BPM window (covers virtually all DJ genres).
-    4. Score each candidate by how strongly the onset envelope peaks at
-       that period — the candidate with the highest peak correlation wins.
-    """
-    hop = 512
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-
-    # Base estimate from autocorrelation
-    ac = librosa.beat.tempo(onset_envelope=onset_env, sr=sr,
-                            hop_length=hop, aggregate=None)
-    base = float(np.median(ac))
-
-    # Generate candidates: base × {0.25, 0.5, 1, 2, 4}
-    candidates = set()
-    for mult in (0.25, 0.5, 1.0, 2.0, 4.0):
-        c = round(base * mult, 2)
-        if 60.0 <= c <= 220.0:
-            candidates.add(c)
-
-    # Force into DJ range if all candidates are too low
-    if candidates and max(candidates) < 80:
-        candidates = {round(c * 2, 2) for c in candidates if c * 2 <= 220}
-
-    def _score(bpm: float) -> float:
-        period = sr * 60.0 / (bpm * hop)   # period in hop frames
-        if period < 2:
-            return 0.0
-        idxs = np.arange(0, len(onset_env), period).astype(int)
-        idxs = idxs[idxs < len(onset_env)]
-        return float(onset_env[idxs].mean()) if len(idxs) else 0.0
-
-    scored = sorted(((b, _score(b)) for b in candidates),
-                    key=lambda x: x[1], reverse=True)
-
-    # Prefer candidates in the core DJ range 80–185 BPM
-    dj_range = [(b, s) for b, s in scored if 80 <= b <= 185]
-    best = dj_range[0][0] if dj_range else (scored[0][0] if scored else base)
-
-    return best
-
-
 def _analyse(path: str) -> dict:
     meta = _read_tags(path)
     try:
