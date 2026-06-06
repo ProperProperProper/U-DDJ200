@@ -223,13 +223,6 @@ class BeatGridWidget(QWidget):
             qp.setPen(QPen(_NOW, 1))
             qp.drawLine(cx, row_top, cx, row_top + row_h)
 
-            # Track-start marker — bright line where sample 0 lands
-            if win_start < 0:
-                start_px = int(-win_start / samp_per_px)
-                if 0 <= start_px < W:
-                    qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 180), 2))
-                    qp.drawLine(start_px, row_top, start_px, row_top + row_h)
-
             # ── 4. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master
                     else ("SYNC" if deck.sync_follower else ""))
@@ -276,33 +269,41 @@ class BeatGridWidget(QWidget):
 
         buf[:] = 0
 
-        samp  = win_start + x_arr * samp_per_px
-        # Clamp to valid waveform range — before-track region shows sample 0,
-        # after-track region shows last sample. Mark pre-track columns as dim.
-        before_track = samp < 0
+        samp        = win_start + x_arr * samp_per_px
+        after_start = samp >= 0
+        after_end   = samp < len(wf) * WAVEFORM_HOP
+        valid       = after_start & after_end
+
+        # Pre-track region: fill with a flat dim tinted stripe (no fake bars)
+        # so it looks intentional rather than like a rendering gap.
+        if not after_start.all():
+            pre_cols = np.where(~after_start)[0]
+            # gentle blue-grey tint at ~8% brightness
+            buf[:, pre_cols, 0] = 12
+            buf[:, pre_cols, 1] = 14
+            buf[:, pre_cols, 2] = 22
+            buf[:, pre_cols, 3] = 180
+
+        # Waveform bars only for audio region
         w_idx = np.clip((samp / WAVEFORM_HOP).astype(np.int64), 0, len(wf) - 1)
+        lo[:] = 0.0; mi[:] = 0.0; hi[:] = 0.0
+        if valid.any():
+            vi = w_idx[valid]
+            lo[valid] = wf[vi, 0]
+            mi[valid] = wf[vi, 1]
+            hi[valid] = wf[vi, 2]
 
-        vi = w_idx   # always valid after clip
-        lo[:] = wf[vi, 0]
-        mi[:] = wf[vi, 1]
-        hi[:] = wf[vi, 2]
-
-        # Dim pre-track region so the track-start boundary is obvious
-        before_factor = np.where(before_track, 0.18, 1.0).astype(np.float32)
-
-        # Spotlight: brightest at playhead (cx = W//2), fades toward edges
+        # Spotlight: brightest at playhead (W/2), fades toward edges
         cx_f   = W / 2.0
         dist   = np.abs(x_arr - cx_f) / cx_f
-        bright = np.clip(1.0 - dist * 0.7, 0.3, 1.0) * before_factor
+        bright = np.clip(1.0 - dist * 0.7, 0.3, 1.0)
         np.clip(lo * 3.0 * bright, 0, 1, out=R)
         np.clip(mi * 2.0 * bright, 0, 1, out=G)
         np.clip(hi * 2.5 * bright, 0, 1, out=B)
 
-        # Use dominant-band energy for height so bass/mid/hi-only sections
-        # show tall bars — vector magnitude divided by √3 made single-band
-        # sections appear at only ~48% height.
         amp = np.maximum(np.maximum(lo, mi), hi)
         np.clip((row_h * 0.92 * amp).astype(np.int32), 1, row_h, out=bar_h)
+        bar_h[~valid] = 0
         np.subtract(row_h, bar_h, out=bar_t)
         bar_t >>= 1   # divide by 2
 
