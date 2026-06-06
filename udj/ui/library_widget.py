@@ -487,9 +487,9 @@ class _InspectWorker(QObject):
                 from ..core.stems import _cache_path, _save_cache
                 from ..library.db import log_stem_inspection
                 _save_cache(fixed, _cache_path(path))
-                log_stem_inspection(path, metrics_before, metrics_after)
 
                 metrics_after = mod.compute_metrics(fixed, orig, sr, name)
+                log_stem_inspection(path, metrics_before, metrics_after)
                 metrics_before["_after"] = metrics_after
                 spec_png = mod.make_spectrogram(fixed, sr, name)
                 all_metrics.append(metrics_before)
