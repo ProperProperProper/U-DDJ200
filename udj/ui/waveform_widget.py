@@ -1,59 +1,58 @@
 """
-WaveformWidget — overview waveform display for a deck.
+WaveformWidget — full-track spectral overview for a deck.
 
-Symmetric bars drawn above and below the horizontal midline.
-Channel-coloured (cyan / orange), played portion full brightness,
-unplayed 25 % brightness. White playhead. End-warning zone turns
-orange→red in the last 30 s. Background #080808. Fixed height 72 px.
+Displays the entire track as a scrolling-free minimap:
+  - Spectral colour bars matching the scrolling beat grid (bass=red, mid=green, hi=blue)
+  - Playhead line (white)
+  - Phrase markers (amber)
+  - End-warning zone (orange→red, last 30 s)
+Fixed height 52 px. Zero per-frame allocations after first load.
 """
 from __future__ import annotations
 
 import numpy as np
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore    import Qt
-from PyQt6.QtGui     import QPainter, QColor, QPen
-
+from PyQt6.QtGui     import QPainter, QColor, QPen, QImage
 
 _BG        = QColor("#07070b")
 _BORDER    = QColor("#1a1a2a")
 _PH_COL    = QColor("#ffffff")
-_EMPTY_MID = QColor("#1c1c28")
-_EMPTY_BAR = QColor("#14141e")
-
-
-def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
-    r = int(c1.red()   + (c2.red()   - c1.red())   * t)
-    g = int(c1.green() + (c2.green() - c1.green()) * t)
-    b = int(c1.blue()  + (c2.blue()  - c1.blue())  * t)
-    return QColor(r, g, b)
+_PHRASE_A  = QColor(255, 210,  40, 220)   # amber phrase marker
+_WARN_LO   = QColor("#ff9900")
+_WARN_HI   = QColor("#ff2200")
 
 
 class WaveformWidget(QWidget):
-    HEIGHT = 88
+    HEIGHT = 52
 
     def __init__(self, accent: str = "#00c8ff", parent=None):
         super().__init__(parent)
-        self._accent     = QColor(accent)
-        self._dim        = QColor(
-            self._accent.red()   // 4,
-            self._accent.green() // 4,
-            self._accent.blue()  // 4,
-        )
-        self._data: np.ndarray | None = None
-        self._pos:      float = 0.0
-        self._duration: float = 0.0
-        self._phrases:  list  = []
+        self._accent      = QColor(accent)
+        self._duration    = 0.0
+        self._pos         = 0.0
+        self._phrases: list[float] = []   # fractional positions 0-1
+
+        # Pre-rendered RGBA strip — rebuilt only when waveform data changes
+        self._strip:     np.ndarray | None = None   # (H, N, 4) uint8
+        self._strip_img: QImage     | None = None   # QImage view into _strip
 
         self.setFixedHeight(self.HEIGHT)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
     # ── public API ─────────────────────────────────────────────
-    def set_waveform(self, data: np.ndarray):
-        """Accept a normalised float32 array, one value per pixel column."""
+
+    def set_waveform(self, data: np.ndarray | None):
+        """
+        Accept deck.waveform — float32 (N, 3): [lo, mid, hi] 0-1 each.
+        Pre-renders a full-width RGBA strip; paint just blits + overlays.
+        """
         if data is None or len(data) == 0:
-            self._data = None
-        else:
-            self._data = np.clip(data.astype(np.float32), 0.0, 1.0)
+            self._strip     = None
+            self._strip_img = None
+            self.update()
+            return
+        self._build_strip(data)
         self.update()
 
     def set_position(self, pos: float):
@@ -67,93 +66,104 @@ class WaveformWidget(QWidget):
         self.update()
 
     def set_phrases(self, phrase_fracs):
-        self._phrases = list(phrase_fracs) if phrase_fracs is not None else []
+        self._phrases = list(phrase_fracs) if phrase_fracs else []
         self.update()
 
     def clear(self):
-        self._data     = None
-        self._pos      = 0.0
-        self._duration = 0.0
-        self._phrases  = []
+        self._strip     = None
+        self._strip_img = None
+        self._pos       = 0.0
+        self._duration  = 0.0
+        self._phrases   = []
         self.update()
 
+    # ── internal ───────────────────────────────────────────────
+
+    def _build_strip(self, wf: np.ndarray):
+        """Pre-render waveform into a fixed-width RGBA strip."""
+        W = max(self.width(), 1)
+        H = self.HEIGHT - 2   # leave 1px top/bottom for border
+
+        n = len(wf)
+        # Map each pixel column → waveform frame
+        idx = (np.arange(W, dtype=np.float64) / W * n).astype(np.int64)
+        idx = np.clip(idx, 0, n - 1)
+
+        lo = wf[idx, 0]
+        mi = wf[idx, 1]
+        hi = wf[idx, 2]
+
+        # Dominant-band amplitude for bar height
+        amp   = np.maximum(np.maximum(lo, mi), hi)
+        bar_h = np.clip((H * 0.92 * amp).astype(np.int32), 1, H)
+
+        # Spectral colour
+        R = np.clip(lo * 3.0, 0, 1)
+        G = np.clip(mi * 2.0, 0, 1)
+        B = np.clip(hi * 2.5, 0, 1)
+
+        # End-warning zone: last 30 s fades orange→red
+        warn_frac = (self._duration - 30.0) / self._duration if self._duration > 0 else 1.0
+        warn_frac = max(0.0, warn_frac)
+        x_frac    = np.arange(W, dtype=np.float32) / max(W - 1, 1)
+        in_warn   = x_frac >= warn_frac
+        if in_warn.any():
+            t      = np.where(in_warn, (x_frac - warn_frac) / max(1.0 - warn_frac, 1e-6), 0.0)
+            R_warn = np.clip(1.0,         0, 1)
+            G_warn = np.clip(0.6 - t*0.6, 0, 1)
+            B_warn = np.zeros(W)
+            R = np.where(in_warn, R_warn, R)
+            G = np.where(in_warn, G_warn, G)
+            B = np.where(in_warn, B_warn, B)
+
+        strip = np.zeros((H, W, 4), dtype=np.uint8)
+        y_arr = np.arange(H, dtype=np.int32)
+        bar_t = ((H - bar_h) // 2)
+        in_bar = (y_arr[:, None] >= bar_t[None, :]) & \
+                 (y_arr[:, None] <  (bar_t + bar_h)[None, :])
+
+        Ru = (R * 255).astype(np.uint8)
+        Gu = (G * 255).astype(np.uint8)
+        Bu = (B * 255).astype(np.uint8)
+        strip[:, :, 0] = np.where(in_bar, Ru[None, :], 0)
+        strip[:, :, 1] = np.where(in_bar, Gu[None, :], 0)
+        strip[:, :, 2] = np.where(in_bar, Bu[None, :], 0)
+        strip[:, :, 3] = np.where(in_bar, 230, 0)
+
+        self._strip     = strip
+        self._strip_img = QImage(strip.data, W, H, W * 4,
+                                 QImage.Format.Format_RGBA8888)
+
+    def resizeEvent(self, _):
+        # Rebuild strip when widget is resized
+        pass   # strip rebuilt lazily on next set_waveform call
+
     # ── painting ───────────────────────────────────────────────
+
     def paintEvent(self, _):
         qp = QPainter(self)
         W, H = self.width(), self.height()
-        mid  = H // 2
 
         qp.fillRect(0, 0, W, H, _BG)
-        # border
-        qp.setPen(QPen(_BORDER, 1))
-        qp.drawRect(0, 0, W - 1, H - 1)
 
-        data = self._data
-        if data is None or len(data) == 0:
-            # placeholder: subtle low-amplitude bars to show the widget area
-            for x in range(0, W, 3):
-                import math
-                amp = 0.06 + 0.05 * abs(math.sin(x * 0.07))
-                bar_h = max(1, int(amp * (mid - 4)))
-                qp.fillRect(x, mid - bar_h, 2, bar_h * 2, _EMPTY_BAR)
-            qp.setPen(QPen(_EMPTY_MID, 1))
-            qp.drawLine(0, mid, W, mid)
-            qp.end()
-            return
+        if self._strip_img is not None:
+            # Stretch pre-rendered strip to current widget width
+            qp.drawImage(qp.viewport(), self._strip_img)
 
-        n   = len(data)
-        pos = self._pos
-
-        # End-warning: compute pixel column where last-30s zone begins
-        warn_col = -1
-        if self._duration > 0:
-            warn_frac = max(0.0, (self._duration - 30.0) / self._duration)
-            warn_col  = int(warn_frac * W)
-
-        _col_warn_start = QColor("#ff9900")
-        _col_warn_end   = QColor("#ff2200")
-        playhead_x = int(pos * (W - 1))
-
-        qp.setPen(Qt.PenStyle.NoPen)
-        for x in range(W):
-            # map pixel column to data index
-            di    = int(x / W * n)
-            di    = max(0, min(n - 1, di))
-            amp   = float(data[di])
-
-            bar_h = max(1, int(amp * (mid - 2)))
-
-            # choose colour
-            played = (x <= playhead_x)
-            if warn_col >= 0 and x >= warn_col:
-                # end-warning zone: gradient orange → red
-                t   = (x - warn_col) / max(1, W - warn_col)
-                base = _lerp_color(_col_warn_start, _col_warn_end, t)
-            else:
-                base = self._accent
-
-            if played:
-                col = base
-            else:
-                col = QColor(base.red() // 4, base.green() // 4, base.blue() // 4)
-
-            qp.setBrush(col)
-            # draw bar symmetrically above and below midline
-            qp.fillRect(x, mid - bar_h, 1, bar_h * 2, col)
-
-        # Phrase markers — amber, prominent
-        _PHRASE_PEN1 = QPen(QColor("#ffdd00"), 2)
-        _PHRASE_PEN2 = QPen(QColor("#ffdd00"), 3)
+        # Phrase markers — amber, full height
+        _PP = QPen(_PHRASE_A, 1)
         for frac in self._phrases:
             px = int(frac * (W - 1))
-            qp.setPen(_PHRASE_PEN1)
+            qp.setPen(_PP)
             qp.drawLine(px, 0, px, H)
-            qp.setPen(_PHRASE_PEN2)
-            qp.drawLine(px, 0, px, 6)
-            qp.drawLine(px, H - 6, px, H)
 
-        # playhead
+        # Playhead — bright white
+        ph = int(self._pos * (W - 1))
         qp.setPen(QPen(_PH_COL, 2))
-        qp.drawLine(playhead_x, 0, playhead_x, H)
+        qp.drawLine(ph, 0, ph, H)
+
+        # Border
+        qp.setPen(QPen(_BORDER, 1))
+        qp.drawRect(0, 0, W - 1, H - 1)
 
         qp.end()

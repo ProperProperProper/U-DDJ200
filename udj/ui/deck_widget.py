@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 from ..core.deck import Deck, STEM_NAMES
+from .waveform_widget import WaveformWidget
 
 
 def _fmt_time(secs: float) -> str:
@@ -221,6 +222,10 @@ class DeckWidget(QWidget):
         badges.addWidget(self._norm_btn)
         root.addLayout(badges)
 
+        # ── Overview waveform ─────────────────────────────────
+        self._overview = WaveformWidget(accent=self._accent, parent=self)
+        root.addWidget(self._overview)
+
         # Stem buttons removed — stems controlled via mixer knobs
         self._stem_btns: dict[str, QPushButton] = {}
 
@@ -329,9 +334,17 @@ class DeckWidget(QWidget):
         for btn in self._stem_btns.values():
             btn.setVisible(False)
             btn.setChecked(True)
-        # Show STEMS badge if track has audio but stems not yet ready
         if self.deck.audio is not None and not self.deck.stems_ready:
             self.badge_stems.setVisible(True)
+        # Feed overview waveform
+        self._overview.set_waveform(d.waveform)
+        self._overview.set_duration(d.duration)
+        phrases = d.phrases
+        if phrases is not None and d.duration > 0:
+            self._overview.set_phrases(
+                [float(p) / (d.sample_rate * d.duration) for p in phrases])
+        else:
+            self._overview.set_phrases([])
 
     def _on_phrase_sync(self):
         engine = getattr(self, '_engine', None)
@@ -610,6 +623,11 @@ class DeckWidget(QWidget):
         self.badge_follower.setVisible(d.sync_follower)
         if self._pad_mode in ("BEAT LOOP", "STEMS", "PAD FX"):
             self._refresh_pads()
+
+        # Overview position
+        if d.audio is not None and d.duration > 0:
+            self._overview.set_position(
+                (d.position / d.sample_rate) / d.duration)
 
         # CLIP indicator
         if self._vu_peak_fn:

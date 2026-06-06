@@ -32,9 +32,11 @@ _SEP    = QColor("#1a1a28")
 _NOW    = QColor("#ffffff")
 
 # Beat grid — white lines at varying opacity, Serato-accurate
-_BEAT_BAR_PEN  = QPen(QColor(255, 255, 255, 200), 1)   # bar (beat 1): 1px bright white
-_BEAT_BAR_GLOW = QPen(QColor(255, 255, 255,  30), 3)   # narrow soft glow
-_BEAT_PEN      = QPen(QColor(255, 255, 255,  80), 1)   # regular beat: dim white
+_BEAT_BAR_PEN    = QPen(QColor(255, 255, 255, 200), 1)   # bar (beat 1): 1px bright white
+_BEAT_BAR_GLOW   = QPen(QColor(255, 255, 255,  30), 3)   # narrow soft glow
+_BEAT_PEN        = QPen(QColor(255, 255, 255,  80), 1)   # regular beat: dim white
+_PHRASE_PEN      = QPen(QColor(255, 210,  40, 240), 2)   # phrase: amber, prominent
+_PHRASE_PEN_GLOW = QPen(QColor(255, 180,   0,  50), 6)   # phrase glow
 
 _WINDOW_BEATS = 16
 
@@ -186,8 +188,7 @@ class BeatGridWidget(QWidget):
                 self._paint_waveform(qp, d_idx, wf, pos, beat_len,
                                      px_per_beat, cx, W, row_top, row_h)
 
-            # ── 3. Bar markers on top — only the bright glow line ────────────
-            # Re-draw bar markers on top of the waveform so they're always visible
+            # ── 3. Bar + phrase markers on top of waveform ───────────────────
             if beats is not None and len(beats) >= 2:
                 i0 = max(0, int(np.searchsorted(beats, vis_lo)) - 1)
                 for j in range(i0, len(beats)):
@@ -199,6 +200,20 @@ class BeatGridWidget(QWidget):
                         if 0 <= px < W:
                             qp.setPen(_BEAT_BAR_PEN)
                             qp.drawLine(px, row_top, px, row_top + row_h)
+
+            # Phrase markers — amber, drawn last so always on top
+            phrases = deck.phrases
+            if phrases is not None and len(phrases) > 0:
+                i0 = max(0, int(np.searchsorted(phrases, vis_lo)) - 1)
+                for pp in phrases[i0:]:
+                    if pp > vis_hi:
+                        break
+                    px = int(cx + (pp - pos) / beat_len * px_per_beat)
+                    if 0 <= px < W:
+                        qp.setPen(_PHRASE_PEN_GLOW)
+                        qp.drawLine(px, row_top, px, row_top + row_h)
+                        qp.setPen(_PHRASE_PEN)
+                        qp.drawLine(px, row_top, px, row_top + row_h)
 
             # ── 4. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master

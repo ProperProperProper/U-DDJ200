@@ -24,20 +24,22 @@ from PyQt6.QtCore    import Qt
 from PyQt6.QtGui     import QPainter, QColor, QPen, QFont
 
 # ── segment table ─────────────────────────────────────────────────────────────
+# Calibrated like Pioneer DJM: normal program level lands in green.
+# Typical dance track peaks at −3 to −6 dBFS → upper green / yellow.
 # (db_lo, db_hi, color_off_hex, color_on_hex, glow_hex)
 _SEGS: list[tuple[float, float, str, str, str]] = []
 
 def _s(lo, hi, off, on, glow=None):
     _SEGS.append((lo, hi, off, on, glow or on))
 
-# green  −48 → −18  (10 × 3 dB) — bright emerald
-for _i in range(10): _s(-48+_i*3, -48+(_i+1)*3, "#050e05", "#00e050", "#00ff60")
-# yellow −18 → −9   (6 × 1.5 dB) — warm gold
-for _i in range(6):  _s(-18+_i*1.5, -18+(_i+1)*1.5, "#0e0d00", "#eecc00", "#ffee00")
-# orange  −9 → −3   (4 × 1.5 dB) — amber
-for _i in range(4):  _s(-9+_i*1.5, -9+(_i+1)*1.5, "#110600", "#ff8800", "#ffaa00")
-# red     −3 →  0   (3 × 1 dB) — hot red
-for _i in range(3):  _s(-3+_i, -2+_i, "#0e0000", "#ff2200", "#ff5500")
+# green  −48 → −6   (14 × 3 dB) — program level zone
+for _i in range(14): _s(-48+_i*3, -48+(_i+1)*3, "#050e05", "#00e050", "#00ff60")
+# yellow  −6 → −3   (3 × 1 dB) — hot but OK
+for _i in range(3):  _s(-6+_i, -5+_i, "#0e0d00", "#eecc00", "#ffee00")
+# orange  −3 → −1   (2 × 1 dB) — pushing it
+for _i in range(2):  _s(-3+_i, -2+_i, "#110600", "#ff8800", "#ffaa00")
+# red     −1 →  0   (1 × 1 dB) — danger
+_s(-1, 0, "#0e0000", "#ff2200", "#ff5500")
 # clip     0 →  3   — pure red flash
 _s(0, 3, "#080000", "#ff0000", "#ff4444")
 
