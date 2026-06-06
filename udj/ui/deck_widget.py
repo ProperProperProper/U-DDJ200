@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QSizePolicy)
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QTimer, QUrl, QPointF, QRectF, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import (QDragEnterEvent, QDropEvent, QPainter, QPen,
+                          QColor, QFont, QRadialGradient, QLinearGradient,
+                          QPainterPath)
 
 from ..core.deck import Deck, STEM_NAMES
 from .waveform_widget import WaveformWidget
@@ -23,6 +25,175 @@ def _main_thread(func):
     QTimer.singleShot(0, func)
 
 
+
+# ── Hyper-realistic performance pad ──────────────────────────────────────────
+
+class PadWidget(QWidget):
+    """Custom-painted performance pad.  LED-through-rubber look."""
+    pressed_sig  = pyqtSignal()
+    released_sig = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lit   = False
+        self._color = QColor("#444444")
+        self._label = ""
+        self._down  = False
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def set_state(self, label: str, color: str, lit: bool):
+        c = QColor(color)
+        if label == self._label and c == self._color and lit == self._lit:
+            return
+        self._label = label
+        self._color = c
+        self._lit   = lit
+        self.update()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._down = True
+            self.update()
+            self.pressed_sig.emit()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._down = False
+            self.update()
+            self.released_sig.emit()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        W, H = float(self.width()), float(self.height())
+        R    = 7.0      # outer corner radius
+        M    = 2.0      # inner margin
+        Ri   = R - M    # inner corner radius
+        lit  = self._lit
+        down = self._down
+        ac   = self._color
+
+        # ── outer glow halo (lit only) ────────────────────────────────────────
+        if lit:
+            for spread, alpha in [(9, 8), (5, 18), (2, 35)]:
+                qp.setPen(Qt.PenStyle.NoPen)
+                qp.setBrush(QColor(ac.red(), ac.green(), ac.blue(), alpha))
+                qp.drawRoundedRect(
+                    -spread, -spread,
+                    W + spread * 2, H + spread * 2,
+                    R + spread, R + spread)
+
+        # ── drop shadow ───────────────────────────────────────────────────────
+        for i in range(5):
+            a = 48 - i * 8
+            d = 0.7 + i * 0.6
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(QColor(0, 0, 0, a))
+            qp.drawRoundedRect(d * 0.4, d, W, H, R, R)
+
+        # ── case / housing (bevelled outer frame) ─────────────────────────────
+        from PyQt6.QtGui import QConicalGradient
+        case_cg = QConicalGradient(W / 2, H / 2, 45)
+        case_cg.setColorAt(0.00, QColor("#252530"))
+        case_cg.setColorAt(0.15, QColor("#2e2e3a"))
+        case_cg.setColorAt(0.35, QColor("#18181e"))
+        case_cg.setColorAt(0.55, QColor("#0e0e12"))
+        case_cg.setColorAt(0.75, QColor("#16161c"))
+        case_cg.setColorAt(1.00, QColor("#252530"))
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(case_cg)
+        qp.drawRoundedRect(0, 0, W, H, R, R)
+
+        # ── inner surface (the rubber/silicone dome) ──────────────────────────
+        if lit:
+            # Base fill — dim accent
+            qp.setBrush(QColor(ac.red() // 5, ac.green() // 5, ac.blue() // 5))
+            qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+            # LED edge glow — 4 directional gradients from each edge inward
+            edge_pairs = [
+                (QLinearGradient(0, M,        0, H * 0.65),  140),   # top
+                (QLinearGradient(0, H - M,    0, H * 0.35),  110),   # bottom
+                (QLinearGradient(M, 0,        W * 0.6, 0),    80),   # left
+                (QLinearGradient(W - M, 0,    W * 0.4, 0),    80),   # right
+            ]
+            for grad, alpha in edge_pairs:
+                grad.setColorAt(0.0, QColor(ac.red(), ac.green(), ac.blue(), alpha))
+                grad.setColorAt(1.0, QColor(ac.red(), ac.green(), ac.blue(), 0))
+                qp.setBrush(grad)
+                qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+            # Centre radial fog (the rubber diffuses the light inward)
+            cg = QRadialGradient(W / 2, H / 2, min(W, H) * 0.52)
+            cg.setColorAt(0.0, QColor(ac.red() // 3, ac.green() // 3, ac.blue() // 3, 160))
+            cg.setColorAt(0.6, QColor(ac.red() // 5, ac.green() // 5, ac.blue() // 5,  60))
+            cg.setColorAt(1.0, QColor(0, 0, 0, 0))
+            qp.setBrush(cg)
+            qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+            # Bright glowing border stroke
+            qp.setPen(QPen(QColor(ac.red(), ac.green(), ac.blue(),
+                                  100 if not down else 60), 1.5))
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.drawRoundedRect(M + 0.75, M + 0.75,
+                               W - M * 2 - 1.5, H - M * 2 - 1.5, Ri, Ri)
+
+        else:
+            # Unlit: dark gradient with slight concave depth
+            body = QLinearGradient(0, M, 0, H - M)
+            body.setColorAt(0.0, QColor("#1d1d24" if not down else "#141418"))
+            body.setColorAt(0.5, QColor("#131318" if not down else "#0e0e12"))
+            body.setColorAt(1.0, QColor("#0e0e12" if not down else "#0a0a0e"))
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(body)
+            qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+            # inner vignette
+            vig = QRadialGradient(W / 2, H / 2, max(W, H) * 0.55)
+            vig.setColorAt(0.0, QColor(255, 255, 255, 5))
+            vig.setColorAt(0.6, QColor(0, 0, 0, 0))
+            vig.setColorAt(1.0, QColor(0, 0, 0, 28))
+            qp.setBrush(vig)
+            qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+        # ── surface sheen — specular top-left highlight (always) ──────────────
+        sheen_alpha = 28 if lit else 18
+        sh = QLinearGradient(M, M, M, H * 0.45)
+        sh.setColorAt(0.0, QColor(255, 255, 255, sheen_alpha))
+        sh.setColorAt(1.0, QColor(255, 255, 255, 0))
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(sh)
+        qp.drawRoundedRect(M, M, W - M * 2, H - M * 2, Ri, Ri)
+
+        # ── bevel strokes (top bright / bottom dark) ──────────────────────────
+        bv_y_top = M + 0.8
+        bv_y_bot = H - M - 0.8
+        bv_x0    = M + Ri
+        bv_x1    = W - M - Ri
+        qp.setPen(QPen(QColor(255, 255, 255, 18 if (lit and not down) else 10), 1.0))
+        qp.drawLine(QPointF(bv_x0, bv_y_top), QPointF(bv_x1, bv_y_top))
+        qp.setPen(QPen(QColor(0, 0, 0, 60 if not down else 30), 1.0))
+        qp.drawLine(QPointF(bv_x0, bv_y_bot), QPointF(bv_x1, bv_y_bot))
+
+        # ── label ─────────────────────────────────────────────────────────────
+        font = QFont()
+        font.setPixelSize(9)
+        font.setBold(True)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.5)
+        qp.setFont(font)
+        if lit:
+            text_col = QColor(255, 255, 255, 230)
+        else:
+            text_col = QColor(60, 60, 80, 255)
+        qp.setPen(text_col)
+        qp.drawText(QRectF(M, M, W - M * 2, H - M * 2),
+                    Qt.AlignmentFlag.AlignCenter, self._label)
+
+        qp.end()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 class DeckWidget(QWidget):
     _sig_pad_mode = pyqtSignal(str)   # emitted from any thread, connected to _set_pad_mode
@@ -277,15 +448,13 @@ class DeckWidget(QWidget):
             cols = 4 if row_i == 0 else 3   # 4 top, 3 bottom (pad 8 hidden)
             for col_i in range(cols):
                 n = row_i * 4 + col_i
-                btn = QPushButton()
-                btn.setFixedSize(PAD_W, PAD_H)
-                btn.setCheckable(True)
-                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                btn.customContextMenuRequested.connect(lambda _, i=n: self._pad_right_click(i))
-                btn.pressed.connect(lambda i=n: self._pad_press(i))
-                btn.released.connect(lambda i=n: self._pad_release(i))
-                pad_row.addWidget(btn)
-                self._pad_btns.append(btn)
+                pad = PadWidget()
+                pad.setFixedSize(PAD_W, PAD_H)
+                pad.customContextMenuRequested.connect(lambda _, i=n: self._pad_right_click(i))
+                pad.pressed_sig.connect(lambda i=n: self._pad_press(i))
+                pad.released_sig.connect(lambda i=n: self._pad_release(i))
+                pad_row.addWidget(pad)
+                self._pad_btns.append(pad)
             pad_row.addStretch()
             pads_outer.addLayout(pad_row)
 
@@ -443,92 +612,44 @@ class DeckWidget(QWidget):
         """Repaint the 7 visible pads for the current mode."""
         mode = self._pad_mode
         from ..core.deck import BEAT_LOOP_SIZES
-        for i, btn in enumerate(self._pad_btns):
+        for i, pad in enumerate(self._pad_btns):
             if mode == "HOT CUE":
-                col  = self._hc_colors[i] if i < len(self._hc_colors) else "#555"
+                col  = self._hc_colors[i] if i < len(self._hc_colors) else "#555555"
                 set_ = self.deck.hot_cues[i] is not None
                 lbl  = f"● {i+1}" if set_ else f"CUE {i+1}"
-                if set_:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:#1a1a1a;border:2px solid {col};"
-                        f"border-radius:6px;color:{col};font-size:9px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:#2a2a2a;}}")
-                else:
-                    btn.setStyleSheet(
-                        "QPushButton{background:#141418;border:1px solid #2a2a35;"
-                        "border-radius:6px;color:#333;font-size:9px;font-weight:bold;}"
-                        "QPushButton:pressed{background:#222228;}")
-                btn.setText(lbl); btn.setChecked(set_)
+                pad.set_state(lbl, col, set_)
 
             elif mode == "BEAT LOOP":
-                col   = "#00dd88"
-                lbl   = self._bl_labels[i] if i < len(self._bl_labels) else ""
+                col    = "#00dd88"
+                lbl    = self._bl_labels[i] if i < len(self._bl_labels) else ""
                 active = (self.deck.loop_active and i < len(BEAT_LOOP_SIZES) and
                           abs(self.deck._current_loop_beats - BEAT_LOOP_SIZES[i]) < 0.01)
-                if active:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:{col};border:2px solid {col};"
-                        f"border-radius:6px;color:#000;font-size:11px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:{col};}}")
-                else:
-                    btn.setStyleSheet(
-                        f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                        f"border-radius:6px;color:#446655;font-size:11px;font-weight:bold;}}"
-                        f"QPushButton:pressed{{background:#1a2a22;}}")
-                btn.setText(lbl); btn.setChecked(active)
+                pad.set_state(lbl, col, active)
 
             elif mode == "BEAT JUMP":
                 col = "#ffcc00"
                 lbl = self._bj_labels[i] if i < len(self._bj_labels) else ""
-                btn.setStyleSheet(
-                    f"QPushButton{{background:#111;border:1px solid #2a2a35;"
-                    f"border-radius:6px;color:#887700;font-size:11px;font-weight:bold;}}"
-                    f"QPushButton:pressed{{background:#1a1400;}}")
-                btn.setText(lbl); btn.setChecked(False)
+                pad.set_state(lbl, col, False)
 
             elif mode == "STEMS":
-                col  = self._stm_colors[i] if i < len(self._stm_colors) else "#222"
-                name = self._stm_names[i]  if i < len(self._stm_names)  else ""
+                col   = self._stm_colors[i] if i < len(self._stm_colors) else "#444444"
+                name  = self._stm_names[i]  if i < len(self._stm_names)  else ""
                 ready = self.deck.stems_ready
 
                 if i < 4:
-                    # Top row: mute toggles.
-                    # DARK = stem playing (normal). LIT = stem muted (cut).
                     lbl    = self._stm_labels[i]
                     target = self.deck._stem_fade_target.get(name, 1.0) if ready else 1.0
                     muted  = target < 0.5
-                    if muted:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:{col};border:2px solid {col};"
-                            f"border-radius:6px;color:#000;font-size:10px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col};}}")
-                    else:
-                        btn.setStyleSheet(
-                            "QPushButton{background:#111;border:1px solid #333;"
-                            "border-radius:6px;color:#555;font-size:10px;font-weight:bold;}"
-                            "QPushButton:pressed{background:#1a1a22;}")
-                    btn.setText(lbl); btn.setChecked(muted)
-
+                    pad.set_state(lbl, col, muted)
                 else:
-                    # Bottom row: echo pads
-                    echo_idx    = i - 4
+                    echo_idx  = i - 4
                     echo_active = getattr(self.deck, '_echo_active', [False]*3)
                     echo_fx     = getattr(self.deck, '_echo_fx_type', ["ECHO"]*3)
                     is_on   = echo_active[echo_idx] if echo_idx < len(echo_active) else False
                     fx_name = echo_fx[echo_idx]     if echo_idx < len(echo_fx)     else "ECHO"
-                    _lbl_map = {0:"VOC",1:"BSS",2:"DRM"}
-                    lbl = f"{_lbl_map.get(echo_idx,'?')}\n{fx_name[:3]}"
-                    if is_on:
-                        btn.setStyleSheet(
-                            f"QPushButton{{background:{col};border:2px solid {col};"
-                            f"border-radius:6px;color:#000;font-size:8px;font-weight:bold;}}"
-                            f"QPushButton:pressed{{background:{col};}}")
-                    else:
-                        btn.setStyleSheet(
-                            "QPushButton{background:#111;border:1px solid #444;"
-                            "border-radius:6px;color:#555;font-size:8px;font-weight:bold;}"
-                            "QPushButton:pressed{background:#1a1a22;}")
-                    btn.setText(lbl); btn.setChecked(is_on)
+                    _lbl_map = {0: "VOC", 1: "BSS", 2: "DRM"}
+                    lbl = f"{_lbl_map.get(echo_idx, '?')}\n{fx_name[:3]}"
+                    pad.set_state(lbl, col, is_on)
 
 
     def _key_shift(self, delta: int, reset: bool = False):
