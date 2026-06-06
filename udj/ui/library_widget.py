@@ -10,12 +10,12 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                               QTableView, QPushButton, QLabel, QProgressBar,
                               QFileDialog, QHeaderView, QAbstractItemView,
                               QDialog, QTextEdit, QSizePolicy, QMessageBox)
-from PyQt6.QtCore import Qt, QTimer, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QMimeData, QUrl, pyqtSignal, QObject, QFileSystemWatcher
 from PyQt6.QtGui import QFont, QColor, QBrush
 from typing import Callable, Optional
 
 import psutil as _psutil
-from ..library.db import all_tracks, init_db, clear_library, stems_are_cached
+from ..library.db import all_tracks, init_db, clear_library, stems_are_cached, get_setting, set_setting
 from ..library.scanner import scan_directory
 
 
@@ -129,10 +129,20 @@ class LibraryWidget(QWidget):
         super().__init__(parent)
         self.on_load_deck1 = on_load_deck1
         self.on_load_deck2 = on_load_deck2
-        self._active_deck  = 0
+        self._active_deck     = 0
+        self._watched_folder  = ""
+        self._watcher         = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_folder_changed)
         self._build_ui()
         init_db()
         self._model.reload()
+        # Resume watching the last-used folder
+        saved = get_setting("watched_folder")
+        if saved:
+            import os
+            if os.path.isdir(saved):
+                self._watcher.addPath(saved)
+                self._watched_folder = saved
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
@@ -261,18 +271,58 @@ class LibraryWidget(QWidget):
         if not folder:
             return
 
-        # Clear existing library — show only what's in the chosen folder
+        # Stop watching previous folder
+        if self._watcher.directories():
+            self._watcher.removePaths(self._watcher.directories())
+
         clear_library()
         self._model.reload()
+        set_setting("watched_folder", folder)
+        self._watched_folder = folder
+        self._watcher.addPath(folder)
 
         def _done():
             self._model.reload()
             self._analyse_after_scan()
-            # Notify main window so it can run stems + inspect when ready
             if callable(getattr(self, 'on_folder_added', None)):
                 self.on_folder_added()
 
         scan_directory(folder, on_done=_done)
+
+    def _on_folder_changed(self, path: str):
+        """Called by QFileSystemWatcher when a file is added/removed in the watched folder."""
+        from ..library.db import get_track
+        from ..library.analyzer import analyse_track
+        from ..core.stems import preanalyse_stems
+        import os
+        from ..library.db import AUDIO_EXTS
+        from pathlib import Path
+
+        folder = getattr(self, '_watched_folder', path)
+        existing = {t["path"] for t in all_tracks()}
+
+        new_files = [
+            str(p) for p in Path(folder).rglob("*")
+            if p.suffix.lower() in AUDIO_EXTS and str(p) not in existing
+        ]
+
+        if not new_files:
+            return
+
+        print(f"[Watcher] {len(new_files)} new file(s) detected — scanning")
+
+        def _on_track_done(meta):
+            self._model.reload()
+            # Kick off stem pre-analysis for the new track
+            if meta and meta.get("path"):
+                preanalyse_stems(
+                    meta["path"], 44100,
+                    track_meta=meta,
+                    on_done=lambda _: self._model.reload(),
+                )
+
+        for fp in new_files:
+            analyse_track(fp, on_done=_on_track_done, force=False)
 
     def _analyse_after_scan(self):
         """After scanning, run BPM/key/grid analysis on new tracks.

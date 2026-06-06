@@ -95,6 +95,25 @@ def init_db():
             )
         """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_insp_path ON stem_inspections(path)")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        con.commit()
+
+
+def get_setting(key: str, default: str = "") -> str:
+    with _conn() as con:
+        row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with _conn() as con:
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         con.commit()
 
 
