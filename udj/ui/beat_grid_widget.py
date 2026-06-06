@@ -149,21 +149,18 @@ class BeatGridWidget(QWidget):
             eff_bpm     = deck.bpm * deck.rate
 
             px_per_beat  = W / _WINDOW_BEATS
-            half_w_samp  = (W / 2) * beat_len / px_per_beat
+            samp_per_px  = beat_len / px_per_beat
+            half_w_samp  = cx * samp_per_px
+            ph_x         = cx   # playhead always at centre
 
-            # Float the playhead left when near the start of the track so the
-            # display never shows empty space to the left of sample 0.
-            ph_x = cx
-            if pos < half_w_samp:
-                ph_x = int(pos / beat_len * px_per_beat)
-
-            vis_lo = pos - ph_x * beat_len / px_per_beat
-            vis_hi = pos + (W - ph_x) * beat_len / px_per_beat
+            win_start = pos - half_w_samp   # may be negative near track start
+            vis_lo    = win_start
+            vis_hi    = win_start + W * samp_per_px
             dbo    = int(getattr(deck, 'downbeat_offset', 0) or 0)
             beats  = deck.beats
 
             def _beat_px(samp_pos):
-                return int(ph_x + (samp_pos - pos) / beat_len * px_per_beat)
+                return int((samp_pos - win_start) / samp_per_px)
 
             def _draw_beats():
                 if beats is not None and len(beats) >= 2:
@@ -192,8 +189,8 @@ class BeatGridWidget(QWidget):
             # ── 2. Waveform ──────────────────────────────────────────────────
             wf = deck.waveform
             if wf is not None and len(wf) > 1:
-                self._paint_waveform(qp, d_idx, wf, pos, beat_len,
-                                     px_per_beat, ph_x, W, row_top, row_h)
+                self._paint_waveform(qp, d_idx, wf, win_start, samp_per_px,
+                                     W, row_top, row_h)
 
             # ── 3. Bar + phrase markers on top of waveform ───────────────────
             if beats is not None and len(beats) >= 2:
@@ -222,9 +219,16 @@ class BeatGridWidget(QWidget):
                         qp.setPen(_PHRASE_PEN)
                         qp.drawLine(px, row_top, px, row_top + row_h)
 
-            # ── Playhead (per-deck, floats left near track start) ────────────
+            # ── Playhead (always at centre) ──────────────────────────────────
             qp.setPen(QPen(_NOW, 1))
-            qp.drawLine(ph_x, row_top, ph_x, row_top + row_h)
+            qp.drawLine(cx, row_top, cx, row_top + row_h)
+
+            # Track-start marker — bright line where sample 0 lands
+            if win_start < 0:
+                start_px = int(-win_start / samp_per_px)
+                if 0 <= start_px < W:
+                    qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 180), 2))
+                    qp.drawLine(start_px, row_top, start_px, row_top + row_h)
 
             # ── 4. BPM / role label ──────────────────────────────
             role = ("MASTER" if deck.sync_master
@@ -241,9 +245,9 @@ class BeatGridWidget(QWidget):
     #  Waveform renderer — zero Python loops
     # ─────────────────────────────────────────────────────────────
 
-    def _paint_waveform(self, qp, d_idx, wf, pos, beat_len,
-                        px_per_beat, ph_x, W, row_top, row_h):
-        cx = ph_x
+    def _paint_waveform(self, qp, d_idx, wf, win_start, samp_per_px,
+                        W, row_top, row_h):
+        """win_start: sample index at x=0 (may be negative near track start)."""
         # Reallocate only when geometry changes
         if self._wf_buf[d_idx] is None or self._wf_w[d_idx] != W or self._wf_h[d_idx] != row_h:
             self._wf_buf[d_idx]   = np.zeros((row_h, W, 4), dtype=np.uint8)
@@ -272,19 +276,24 @@ class BeatGridWidget(QWidget):
 
         buf[:] = 0
 
-        samp  = pos + (x_arr - cx) * (beat_len / px_per_beat)
-        w_idx = (samp / WAVEFORM_HOP).astype(np.int64)
-        valid = (w_idx >= 0) & (w_idx < len(wf))
+        samp  = win_start + x_arr * samp_per_px
+        # Clamp to valid waveform range — before-track region shows sample 0,
+        # after-track region shows last sample. Mark pre-track columns as dim.
+        before_track = samp < 0
+        w_idx = np.clip((samp / WAVEFORM_HOP).astype(np.int64), 0, len(wf) - 1)
 
-        lo[:] = 0.0; mi[:] = 0.0; hi[:] = 0.0
-        if valid.any():
-            vi = w_idx[valid]
-            lo[valid] = wf[vi, 0]
-            mi[valid] = wf[vi, 1]
-            hi[valid] = wf[vi, 2]
+        vi = w_idx   # always valid after clip
+        lo[:] = wf[vi, 0]
+        mi[:] = wf[vi, 1]
+        hi[:] = wf[vi, 2]
 
-        dist   = np.abs(x_arr - cx) / (W / 2.0)
-        bright = np.clip(1.0 - dist * 0.7, 0.3, 1.0)
+        # Dim pre-track region so the track-start boundary is obvious
+        before_factor = np.where(before_track, 0.18, 1.0).astype(np.float32)
+
+        # Spotlight: brightest at playhead (cx = W//2), fades toward edges
+        cx_f   = W / 2.0
+        dist   = np.abs(x_arr - cx_f) / cx_f
+        bright = np.clip(1.0 - dist * 0.7, 0.3, 1.0) * before_factor
         np.clip(lo * 3.0 * bright, 0, 1, out=R)
         np.clip(mi * 2.0 * bright, 0, 1, out=G)
         np.clip(hi * 2.5 * bright, 0, 1, out=B)
@@ -294,7 +303,6 @@ class BeatGridWidget(QWidget):
         # sections appear at only ~48% height.
         amp = np.maximum(np.maximum(lo, mi), hi)
         np.clip((row_h * 0.92 * amp).astype(np.int32), 1, row_h, out=bar_h)
-        bar_h[~valid] = 0
         np.subtract(row_h, bar_h, out=bar_t)
         bar_t >>= 1   # divide by 2
 
