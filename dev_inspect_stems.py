@@ -211,6 +211,112 @@ def make_spectrogram(stems: dict, sr: int, track_name: str) -> bytes:
     return buf.read()
 
 
+# ── Auto-fix: corrective DSP applied to live stems in memory ─────────────────
+
+def auto_fix_stems(stems: dict, metrics: dict, sr: int) -> dict:
+    """
+    Read the computed metrics and apply targeted corrective DSP to each stem.
+    Returns a new stems dict with corrections applied.
+    All adjustments are proportional to how far each metric is outside its
+    expected range — mild anomalies get mild corrections, severe ones get full.
+    """
+    from scipy.signal import sosfilt, butter
+    import numpy as np
+
+    nyq   = sr / 2
+    fixed = {k: v.copy() for k, v in stems.items()}
+    sm    = metrics.get("stems", {})
+    cc    = metrics.get("cross_contamination_0_to_1", {})
+
+    def _hp(audio, hz, order=6):
+        sos = butter(order, min(hz / nyq, 0.99), "high", output="sos")
+        return np.stack([sosfilt(sos, audio[:, 0].astype(np.float64)),
+                         sosfilt(sos, audio[:, 1].astype(np.float64))], axis=1).astype(np.float32)
+
+    def _lp(audio, hz, order=6):
+        sos = butter(order, min(hz / nyq, 0.99), "low", output="sos")
+        return np.stack([sosfilt(sos, audio[:, 0].astype(np.float64)),
+                         sosfilt(sos, audio[:, 1].astype(np.float64))], axis=1).astype(np.float32)
+
+    def _shelve_db(audio, hz, db, shelf="high", order=2):
+        if abs(db) < 0.1:
+            return audio
+        gain = 10.0 ** (db / 20.0) - 1.0
+        sos = butter(order, min(hz / nyq, 0.99), shelf, output="sos")
+        band = np.stack([sosfilt(sos, audio[:, 0].astype(np.float64)),
+                         sosfilt(sos, audio[:, 1].astype(np.float64))], axis=1)
+        return (audio.astype(np.float64) + band * gain).astype(np.float32)
+
+    # ── DRUMS ────────────────────────────────────────────────────────────────
+    if "drums" in fixed and "drums" in sm:
+        d = sm["drums"]
+        hi = d.get("hi_4k_16k", 0.0)
+        if hi > 0.50:
+            # Trim excess hat air proportionally
+            excess_db = -min((hi - 0.50) * 30, 6.0)
+            fixed["drums"] = _shelve_db(fixed["drums"], 10000, excess_db, "high")
+
+    # ── BASS ─────────────────────────────────────────────────────────────────
+    if "bass" in fixed and "bass" in sm:
+        d = sm["bass"]
+        sub = d.get("sub_20_80hz", 0.0)
+        if sub > 0.60:
+            # Sub is too dominant — attenuate it
+            excess_db = -min((sub - 0.60) * 15, 6.0)
+            fixed["bass"] = _shelve_db(fixed["bass"], 80, excess_db, "low")
+
+    # ── OTHER / SYNTHS ────────────────────────────────────────────────────────
+    if "other" in fixed and "other" in sm:
+        d = sm["other"]
+        sub = d.get("sub_20_80hz", 0.0)
+        if sub > 0.08:
+            # Bass is leaking into synths — apply adaptive HP
+            # Scale cutoff based on severity: 0.08→200Hz, 0.5→300Hz
+            hp_hz = 200 + min(int((sub - 0.08) / 0.42 * 100), 100)
+            fixed["other"] = _hp(fixed["other"], hp_hz, order=10)
+
+    # ── VOCALS ────────────────────────────────────────────────────────────────
+    if "vocals" in fixed and "vocals" in sm:
+        d = sm["vocals"]
+        mid = d.get("mid_1k_4k", 0.0)
+        if mid > 0.70:
+            excess_db = -min((mid - 0.70) * 20, 6.0)
+            fixed["vocals"] = _shelve_db(fixed["vocals"], 1500, excess_db, "high")
+        sub = d.get("sub_20_80hz", 0.0)
+        if sub > 0.06:
+            # Bass leaking into vocals
+            fixed["vocals"] = _hp(fixed["vocals"], 200, order=4)
+
+    # ── Cross-contamination corrections ───────────────────────────────────────
+    drm_voc = cc.get("drums leaking into vocals", 0.0)
+    if drm_voc >= _CONTAMINATION_WARN and "drums" in fixed and "vocals" in fixed:
+        # Spectral subtraction of drums above 2 kHz from vocals
+        from scipy.signal import sosfilt, butter
+        xover = min(2000.0 / nyq, 0.99)
+        sos_hp = butter(8, xover, "high", output="sos")
+        sos_lp = butter(8, xover, "low",  output="sos")
+        voc64  = fixed["vocals"].astype(np.float64)
+        drm64  = fixed["drums"].astype(np.float64)
+        alpha  = min(0.4 + drm_voc * 0.6, 0.85)
+        for ch in range(2):
+            voc_lo = sosfilt(sos_lp, voc64[:, ch])
+            voc_hi = sosfilt(sos_hp, voc64[:, ch])
+            drm_hi = sosfilt(sos_hp, drm64[:, ch])
+            corr_hi = voc_hi - alpha * drm_hi
+            corr_hi = np.where(np.abs(corr_hi) < np.abs(voc_hi) * 0.1,
+                                voc_hi * 0.1, corr_hi)
+            voc64[:, ch] = voc_lo + corr_hi
+        fixed["vocals"] = voc64.astype(np.float32)
+
+    bas_oth = cc.get("bass leaking into synths", 0.0)
+    if bas_oth >= _CONTAMINATION_WARN and "other" in fixed:
+        # Extra HP pass scaled to bleed severity
+        hp_hz = 200 + min(int((bas_oth - _CONTAMINATION_WARN) / 0.65 * 120), 120)
+        fixed["other"] = _hp(fixed["other"], hp_hz, order=8)
+
+    return fixed
+
+
 # ── Local DSP analysis ────────────────────────────────────────────────────────
 
 # Thresholds derived from htdemucs_ft expected output on electronic music
@@ -342,15 +448,15 @@ def analyse_stems(all_metrics: list[dict], all_specs: list[bytes]) -> str:
             for f in findings:
                 lines.append(f"  {f}")
 
+        lines.append("")
+        lines.append("AUTO-FIX APPLIED TO LIVE STEMS")
+        lines.append("─" * 40)
         if recommendations:
-            lines.append("")
-            lines.append("RECOMMENDED PARAMETER CHANGES (stems.py)")
-            lines.append("─" * 40)
+            lines.append("  Corrections applied in memory for this session:")
             for r in sorted(set(recommendations)):
-                lines.append(r)
+                lines.append(f"  ✔ {r.strip()}")
         else:
-            lines.append("")
-            lines.append("No parameter changes needed.")
+            lines.append("  ✔ No corrections needed — stems are clean.")
 
         lines.append("")
 

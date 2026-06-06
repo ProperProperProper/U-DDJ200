@@ -428,7 +428,16 @@ class _InspectWorker(QObject):
                 stems = {k: v[:n] for k, v in stems.items()}
 
                 metrics = mod.compute_metrics(stems, orig, sr, name)
-                spec_png = mod.make_spectrogram(stems, sr, name)
+
+                # Auto-fix: apply corrective DSP, write back into deck.stems and disk cache
+                fixed = mod.auto_fix_stems(stems, metrics, sr)
+                for stem_name, arr in fixed.items():
+                    if stem_name in deck.stems:
+                        deck.stems[stem_name][:n] = arr
+                from ..core.stems import _cache_path, _save_cache
+                _save_cache(fixed, _cache_path(path))
+
+                spec_png = mod.make_spectrogram(fixed, sr, name)
                 all_metrics.append(metrics)
                 all_specs.append(spec_png)
             analysis = mod.analyse_with_claude(all_metrics, all_specs)

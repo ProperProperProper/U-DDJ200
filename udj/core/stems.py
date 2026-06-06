@@ -25,7 +25,7 @@ STEM_NAMES = ["drums", "bass", "other", "vocals"]
 
 # Bump this version string whenever the stems post-processing pipeline changes.
 # Cached .npz files store this version; mismatches trigger automatic re-analysis.
-STEMS_VERSION = "v13"  # v13: Wiener filter refinement + adaptive vocal gate
+STEMS_VERSION = "v14"  # v14: OTHER hp 200Hz, vocals presence -1.5dB, drum→voc alpha 0.75/2kHz
 
 # Single-worker executor — demucs saturates MPS/CPU, no gain from parallelism.
 # One track at a time gives consistent throughput without thrashing.
@@ -181,6 +181,9 @@ def _worker(file_path, sample_rate, on_done, on_error, track_meta):
             if audio.shape[1] == 1:
                 audio = np.repeat(audio, 2, axis=1)
             result = _separate_dsp(audio, sr, track_meta)
+            _save_cache(result, _cache_path(file_path))
+            from ..library.db import mark_stems_cached
+            mark_stems_cached(file_path)
             on_done(result)
         except Exception as e2:
             print(f"[Stems] DSP fallback also failed: {e2}")
@@ -552,8 +555,8 @@ def _process_other(audio: np.ndarray, sr: int) -> np.ndarray:
 
     audio64 = audio.astype(np.float64)
 
-    # Hard HP 150 Hz — 10th-order (steeper roll-off than 8th-order at 120 Hz)
-    sos_hp = butter(10, min(150.0 / nyq, 0.99), "high", output="sos")
+    # Hard HP 200 Hz — 10th-order; 150 Hz still passed 0.455 sub ratio into other stem
+    sos_hp = butter(10, min(200.0 / nyq, 0.99), "high", output="sos")
     audio64 = np.stack([sosfilt(sos_hp, audio64[:, 0]),
                         sosfilt(sos_hp, audio64[:, 1])], axis=1)
 
@@ -618,13 +621,13 @@ def _process_vocals(audio: np.ndarray, sr: int) -> np.ndarray:
     audio64 = np.stack([sosfilt(sos_lp, audio64[:, 0]),
                         sosfilt(sos_lp, audio64[:, 1])], axis=1)
 
-    # 3. Presence +3 dB at 1.5–4 kHz (cut through a loud techno mix)
+    # 3. Presence +1.5 dB at 1.5–4 kHz — reduced from +3 dB; mid_1k_4k was 0.919 (expected ≤0.70)
     sos_p_hp = butter(2, 1500.0 / nyq, "high", output="sos")
     sos_p_lp = butter(2, min(4000.0 / nyq, 0.99), "low",  output="sos")
     pres_L = sosfilt(sos_p_lp, sosfilt(sos_p_hp, audio64[:, 0]))
     pres_R = sosfilt(sos_p_lp, sosfilt(sos_p_hp, audio64[:, 1]))
-    audio64[:, 0] += pres_L * (10.0 ** (3.0 / 20.0) - 1.0)
-    audio64[:, 1] += pres_R * (10.0 ** (3.0 / 20.0) - 1.0)
+    audio64[:, 0] += pres_L * (10.0 ** (1.5 / 20.0) - 1.0)
+    audio64[:, 1] += pres_R * (10.0 ** (1.5 / 20.0) - 1.0)
 
     # 4. Adaptive gate — threshold derived from signal's own RMS distribution.
     #    Compute RMS in 10ms frames, sort them, set threshold at the 30th percentile
@@ -724,7 +727,7 @@ def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,
     """
     from scipy.signal import sosfilt, butter
     nyq = sr / 2
-    xover = min(3000.0 / nyq, 0.99)
+    xover = min(2000.0 / nyq, 0.99)
 
     sos_hp = butter(8, xover, "high", output="sos")
     sos_lp = butter(8, xover, "low",  output="sos")
@@ -732,7 +735,7 @@ def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,
     voc64  = vocals.astype(np.float64)
     drm64  = drums.astype(np.float64)
 
-    # Split both stems at 3 kHz
+    # Split both stems at 2 kHz (lowered from 3 kHz — catches snare bleed, corr was 0.539)
     voc_lo = np.stack([sosfilt(sos_lp, voc64[:, 0]),
                        sosfilt(sos_lp, voc64[:, 1])], axis=1)
     voc_hi = np.stack([sosfilt(sos_hp, voc64[:, 0]),
@@ -741,7 +744,7 @@ def _subtract_drum_bleed_from_vocals(vocals: np.ndarray, drums: np.ndarray,
                        sosfilt(sos_hp, drm64[:, 1])], axis=1)
 
     # Spectral subtraction with soft floor (never go below zero energy)
-    alpha = 0.6
+    alpha = 0.75   # raised from 0.6 — drums→vocals bleed was 0.539
     corrected_hi = voc_hi - alpha * drm_hi
     # Soft floor: clip to preserve sign but prevent over-subtraction
     corrected_hi = np.where(
