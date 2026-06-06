@@ -10,7 +10,7 @@ import threading
 from math import gcd
 import numpy as np
 import soundfile as sf
-from scipy.signal import resample_poly, sosfilt, butter
+from scipy.signal import resample_poly
 from typing import Optional, Callable
 from . import event_log
 from .stems import STEM_NAMES
@@ -132,31 +132,6 @@ class Deck:
         self.on_hot_cue_changed:    Optional[Callable] = None
         self.on_stems_ready:        Optional[Callable] = None
 
-        # Anti-aliasing filter — precomputed lookup table, safe to call in callback.
-        # butter() must NEVER run inside the audio callback; build all buckets at init.
-        # Buckets: rate 1.05 → 2.50 in steps of 0.05 (30 entries, <10ms total at init).
-        self._aa_table: dict[float, np.ndarray] = {}
-        nyq = sample_rate / 2.0
-        for _r100 in range(105, 255, 5):   # 1.05 … 2.50
-            _r   = _r100 / 100.0
-            _cut = min(1.0 / _r, 0.95)    # normalised cutoff
-            self._aa_table[_r] = butter(8, _cut, btype='low', output='sos')
-        self._aa_bucket: float = 0.0       # last bucket used
-        self._aa_zi_L: Optional[np.ndarray] = None
-        self._aa_zi_R: Optional[np.ndarray] = None
-
-    def _get_aa_sos(self, rate: float):
-        """Return (sos, zi_L, zi_R) for the nearest pre-built bucket.
-        No scipy calls here — safe to invoke from the audio callback."""
-        # Round to nearest 0.05 bucket, clamped to table range
-        bucket = round(min(max(rate, 1.05), 2.50) / 0.05) * 0.05
-        bucket = round(bucket, 2)
-        sos = self._aa_table.get(bucket) or next(iter(self._aa_table.values()))
-        if bucket != self._aa_bucket or self._aa_zi_L is None:
-            self._aa_zi_L = np.zeros((sos.shape[0], 2), dtype=np.float64)
-            self._aa_zi_R = np.zeros((sos.shape[0], 2), dtype=np.float64)
-            self._aa_bucket = bucket
-        return sos, self._aa_zi_L, self._aa_zi_R
 
     def _reset_stem_state(self):
         """Reset all stem playback state — called on init and on each new track load."""
@@ -615,17 +590,6 @@ class Deck:
             rate       = (self.rate + self._bend) * key_ratio
             self._bend *= 0.75   # decay: bend fades over ~10 callbacks (230ms)
 
-            # Anti-aliasing: when playing back faster than 1× the signal content
-            # is compressed toward Nyquist. Apply a LP filter at Nyquist/rate
-            # before Hermite interpolation so aliased images stay below −80 dBFS.
-            if rate > 1.05:
-                sos, zi_L, zi_R = self._get_aa_sos(rate)
-                L_in = audio[:, 0].astype(np.float64)
-                R_in = audio[:, 1].astype(np.float64)
-                L_aa, self._aa_zi_L = sosfilt(sos, L_in, zi=zi_L)
-                R_aa, self._aa_zi_R = sosfilt(sos, R_in, zi=zi_R)
-                audio = np.stack([L_aa.astype(np.float32),
-                                  R_aa.astype(np.float32)], axis=1)
 
             pos = self.position + np.arange(frames, dtype=np.float64) * rate
 
