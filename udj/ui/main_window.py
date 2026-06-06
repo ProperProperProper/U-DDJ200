@@ -130,8 +130,8 @@ class MainWindow(QMainWindow):
         self.library.setMinimumHeight(200)
         root.addWidget(self.library, 1)
 
-        # Wire Clear Log button to dev log
-        self.library._btn_clear_log.clicked.connect(self._dev_log._clear)
+        # Clear log on every startup so each session starts clean
+        self._dev_log._clear()
 
         # Give the MIDI controller a reference so shift+CFX can scroll/load
         self.controller.library = self.library

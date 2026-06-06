@@ -226,14 +226,11 @@ class LibraryWidget(QWidget):
         self._cpu_timer.setInterval(1000)
         self._cpu_timer.timeout.connect(self._update_cpu)
 
-        self._btn_clear_log = _tbtn("⊘  Clear Log", "#cc4400")
-        self._btn_clear_log.setMinimumWidth(90)
 
         bar.addWidget(self._search, 1)
         bar.addWidget(self._btn_scan)
         bar.addWidget(self._btn_clear)
         bar.addWidget(self._btn_clear_cache)
-        bar.addWidget(self._btn_clear_log)
         bar.addWidget(self._btn_stems_inspect)
         bar.addWidget(self._btn_inspect_all)
         bar.addWidget(self._btn_d1)
