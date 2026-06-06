@@ -764,10 +764,37 @@ class Mixer:
         self._zi_mb_L  = np.zeros((sos_mb.shape[0], 2), dtype=np.float64)
         self._zi_mb_R  = np.zeros((sos_mb.shape[0], 2), dtype=np.float64)
 
+        # DC blocking: single-pole HP @ ~5 Hz on master bus
+        # Coefficient: R = 1 - (2π × 5 / sr)  ≈ 0.9993 @ 44100 Hz
+        self._dc_r     = 1.0 - (2.0 * np.pi * 5.0 / sample_rate)
+        self._dc_x_L   = 0.0   # HP state
+        self._dc_x_R   = 0.0
+        self._dc_y_L   = 0.0
+        self._dc_y_R   = 0.0
+
     def _xf_gains(self):
         cf = (self.crossfader + 1.0) / 2.0
         return (float(np.cos(cf * np.pi / 2)),
                 float(np.cos((1.0 - cf) * np.pi / 2)))
+
+    def _dc_block(self, audio: np.ndarray) -> np.ndarray:
+        """Single-pole DC blocker on master bus. R ≈ 0.9993 @ 44100 Hz (fc ≈ 5 Hz)."""
+        R = self._dc_r
+        L_in = audio[:, 0].astype(np.float64)
+        R_in = audio[:, 1].astype(np.float64)
+        L_out = np.empty_like(L_in)
+        R_out = np.empty_like(R_in)
+        x_L, y_L = self._dc_x_L, self._dc_y_L
+        x_R, y_R = self._dc_x_R, self._dc_y_R
+        for i in range(len(L_in)):
+            y_L = L_in[i] - x_L + R * y_L;  x_L = L_in[i];  L_out[i] = y_L
+            y_R = R_in[i] - x_R + R * y_R;  x_R = R_in[i];  R_out[i] = y_R
+        self._dc_x_L, self._dc_y_L = x_L, y_L
+        self._dc_x_R, self._dc_y_R = x_R, y_R
+        out = audio.copy()
+        out[:, 0] = L_out.astype(np.float32)
+        out[:, 1] = R_out.astype(np.float32)
+        return out
 
     def _mono_bass(self, audio: np.ndarray) -> np.ndarray:
         """Sum bass below 200 Hz to mono — prevents two-track low-end mud."""
@@ -794,7 +821,15 @@ class Mixer:
             self.ch_peak[i] = float(np.max(np.abs(ch_out)))
             master += ch_out
         master = self._mono_bass(master)
-        return soft_limit(master * self.master_vol)
+        master = self._dc_block(master)
+        master = soft_limit(master * self.master_vol)
+        # Triangular dither: two uniform noise samples summed → TPDF, LSB = 2^-24
+        # Removes quantisation distortion when 32-bit float is converted to 24/16-bit
+        # by the OS audio pipeline. Inaudible at −144 dBFS but linearises the floor.
+        lsb = 2.0 ** -24
+        dither = (np.random.uniform(-lsb, lsb, master.shape).astype(np.float32) +
+                  np.random.uniform(-lsb, lsb, master.shape).astype(np.float32))
+        return master + dither
 
     def set_volume_raw(self, ch, raw, max_raw=0x3FFF):
         p = raw / max_raw                 # linear position 0..1

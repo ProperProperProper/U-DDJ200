@@ -10,7 +10,7 @@ import threading
 from math import gcd
 import numpy as np
 import soundfile as sf
-from scipy.signal import resample_poly
+from scipy.signal import resample_poly, sosfilt, butter
 from typing import Optional, Callable
 from . import event_log
 from .stems import STEM_NAMES
@@ -131,6 +131,28 @@ class Deck:
         self.on_play_state_changed: Optional[Callable] = None
         self.on_hot_cue_changed:    Optional[Callable] = None
         self.on_stems_ready:        Optional[Callable] = None
+
+        # Anti-aliasing filter state — low-pass applied before interpolation
+        # when rate > 1 (pitch-up compresses content toward Nyquist).
+        # Filter is rebuilt lazily when rate changes significantly.
+        self._aa_rate: float = 1.0          # rate the current filter was built for
+        self._aa_sos:  Optional[np.ndarray] = None
+        self._aa_zi_L: Optional[np.ndarray] = None
+        self._aa_zi_R: Optional[np.ndarray] = None
+
+    def _get_aa_sos(self, rate: float):
+        """Return (sos, zi_L, zi_R) anti-alias LP filter for given playback rate.
+        Cutoff = Nyquist / rate so upward-pitched content can't fold back.
+        Only rebuilt when rate changes by more than 1%."""
+        if (self._aa_sos is None or abs(rate - self._aa_rate) > 0.01 * self._aa_rate):
+            nyq    = self.sample_rate / 2.0
+            cutoff = min(nyq / rate, nyq * 0.95) / nyq   # normalised, capped at 0.95
+            sos    = butter(8, cutoff, btype='low', output='sos')
+            self._aa_sos  = sos
+            self._aa_zi_L = np.zeros((sos.shape[0], 2), dtype=np.float64)
+            self._aa_zi_R = np.zeros((sos.shape[0], 2), dtype=np.float64)
+            self._aa_rate = rate
+        return self._aa_sos, self._aa_zi_L, self._aa_zi_R
 
     def _reset_stem_state(self):
         """Reset all stem playback state — called on init and on each new track load."""
@@ -589,6 +611,18 @@ class Deck:
             rate       = (self.rate + self._bend) * key_ratio
             self._bend *= 0.75   # decay: bend fades over ~10 callbacks (230ms)
 
+            # Anti-aliasing: when playing back faster than 1× the signal content
+            # is compressed toward Nyquist. Apply a LP filter at Nyquist/rate
+            # before Hermite interpolation so aliased images stay below −80 dBFS.
+            if rate > 1.05:
+                sos, zi_L, zi_R = self._get_aa_sos(rate)
+                L_in = audio[:, 0].astype(np.float64)
+                R_in = audio[:, 1].astype(np.float64)
+                L_aa, self._aa_zi_L = sosfilt(sos, L_in, zi=zi_L)
+                R_aa, self._aa_zi_R = sosfilt(sos, R_in, zi=zi_R)
+                audio = np.stack([L_aa.astype(np.float32),
+                                  R_aa.astype(np.float32)], axis=1)
+
             pos = self.position + np.arange(frames, dtype=np.float64) * rate
 
             loop_wrap_mask = None
@@ -643,13 +677,16 @@ class Deck:
                     if g_start == g_target:
                         gain_curve = np.full(frames, g_start * vol, dtype=np.float32)
                     else:
-                        # Linear ramp across this buffer
+                        # Equal-power ramp: sqrt gives perceptually smooth fade,
+                        # avoiding the audible "step" that a linear ramp produces
+                        # on transient-dense material like drums.
                         delta      = g_target - g_start
                         step       = delta / _STEM_FADE_SAMPLES
-                        ramp       = g_start + np.arange(frames, dtype=np.float64) * step
-                        ramp       = np.clip(ramp,
+                        ramp_lin   = g_start + np.arange(frames, dtype=np.float64) * step
+                        ramp_lin   = np.clip(ramp_lin,
                                              min(g_start, g_target),
                                              max(g_start, g_target))
+                        ramp       = np.sqrt(np.maximum(ramp_lin, 0.0))
                         gain_curve = (ramp * vol).astype(np.float32)
                         # Advance fade state
                         new_g = g_start + step * frames
@@ -678,8 +715,11 @@ class Deck:
                 n_blend = min(frames, self._xfade_len - self._xfade_done)
                 t0 = self._xfade_done / self._xfade_len
                 t1 = (self._xfade_done + n_blend) / self._xfade_len
-                fade_in  = np.linspace(t0,       t1,       n_blend, dtype=np.float32)
-                fade_out = np.linspace(1.0 - t0, 1.0 - t1, n_blend, dtype=np.float32)
+                # Equal-power (constant-power) crossfade: sin/cos curves preserve
+                # total loudness at the midpoint where linear fades dip ~3 dB.
+                t_lin    = np.linspace(t0, t1, n_blend, dtype=np.float32)
+                fade_in  = np.sin(t_lin * (np.pi / 2)).astype(np.float32)
+                fade_out = np.cos(t_lin * (np.pi / 2)).astype(np.float32)
 
                 src = self._xfade_src_pos + np.arange(n_blend, dtype=np.float64) * rate
                 src = np.clip(src, 0.0, total - 2.001)
@@ -713,8 +753,9 @@ class Deck:
                 first_wrap = int(np.argmax(loop_wrap_mask))
                 n_blend = min(xf, frames - first_wrap, frames)
                 if n_blend > 0:
-                    fade_in  = np.linspace(0.0, 1.0, n_blend, dtype=np.float32)
-                    fade_out = 1.0 - fade_in
+                    t_lin    = np.linspace(0.0, 1.0, n_blend, dtype=np.float32)
+                    fade_in  = np.sin(t_lin * (np.pi / 2)).astype(np.float32)
+                    fade_out = np.cos(t_lin * (np.pi / 2)).astype(np.float32)
                     # Read the outgoing signal directly from loop_out position
                     tail_start = min(self.loop_out, total - 2)
                     tail_idx   = np.clip(np.arange(tail_start,

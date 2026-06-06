@@ -27,7 +27,7 @@ from . import stems as stems_mod
 from . import event_log
 
 NUM_DECKS   = 2
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 512
 
 # ── Sync constants ────────────────────────────────────────────────────────────
 # Strategy: hard rate lock + continuous position P-controller.

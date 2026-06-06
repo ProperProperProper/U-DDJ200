@@ -822,6 +822,13 @@ def _calibrate_levels(stems: dict[str, np.ndarray],
     factor   = orig_rms / (sum_rms + 1e-9)
     factor   = float(np.clip(factor, 0.1, 4.0))   # safety bounds
 
+    if factor > 2.0:
+        import logging
+        logging.warning(
+            f"[Stems] calibration factor {factor:.2f}× exceeds 2.0 — "
+            f"stem sum is very quiet (sum_rms={sum_rms:.4f}, orig_rms={orig_rms:.4f}). "
+            f"Post-processing may have over-attenuated. Check Wiener/post DSP chain.")
+
     print(f"[Stems] level calibration: sum_rms={sum_rms:.4f} "
           f"orig_rms={orig_rms:.4f}  factor={factor:.3f}")
 
