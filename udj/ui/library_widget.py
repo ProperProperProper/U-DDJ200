@@ -277,7 +277,9 @@ class LibraryWidget(QWidget):
         self._model.reload()
 
     def _scan(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Music Folder")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Music Folder", "",
+            QFileDialog.Option.DontUseNativeDialog)
         if not folder:
             return
 
