@@ -321,8 +321,8 @@ brew install python@3.9
 ### 3. Clone
 
 ```bash
-git clone https://github.com/PahtrikProper/U-DJ.git
-cd U-DJ
+git clone https://github.com/ProperProperProper/U-DDJ200.git
+cd U-DDJ200
 ```
 
 ### 4. Install dependencies
